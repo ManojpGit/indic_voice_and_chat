@@ -13,12 +13,12 @@ Everything is gated behind explicit opt-in (`VOX_LIVE_TESTS=1`, ngrok URL, env v
 
 ### Accounts + keys
 
-| Provider | Get a key | Used for |
-|---|---|---|
-| Groq    | https://console.groq.com/keys                            | STT (Whisper-large-v3) |
-| Gemini  | https://aistudio.google.com/app/apikey                   | LLM (gemini-2.0-flash) |
-| Sarvam  | https://dashboard.sarvam.ai                              | TTS (bulbul / meera voice) |
-| Twilio  | https://console.twilio.com  + buy a phone number         | Outbound calls + Media Streams |
+| Provider | Get a key                                       | Used for                       |
+| -------- | ----------------------------------------------- | ------------------------------ |
+| Groq     | https://console.groq.com/keys                   | STT (Whisper-large-v3)         |
+| Gemini   | https://aistudio.google.com/app/apikey          | LLM (gemini-2.0-flash)         |
+| Sarvam   | https://dashboard.sarvam.ai                     | TTS (bulbul / meera voice)     |
+| Twilio   | https://console.twilio.com + buy a phone number | Outbound calls + Media Streams |
 
 ### Tools
 
@@ -32,13 +32,15 @@ brew install ngrok          # or download from https://ngrok.com
 Set these in your shell or in a local `.env` (which is gitignored):
 
 ```bash
-# Provider keys for the dev tenant
+# Provider keys for the dev tenant — replace with your own values, never commit
 export TENANT_DEV_GROQ_KEY="gsk_..."
 export TENANT_DEV_GEMINI_KEY="AIza..."
 export TENANT_DEV_SARVAM_KEY="..."
 export TENANT_DEV_TWILIO_SID="AC..."
 export TENANT_DEV_TWILIO_TOKEN="..."
-export TENANT_DEV_WEBHOOK_SECRET="random-string-for-signature-verification"
+# Random string used to verify inbound webhook signatures
+# (NOT the ngrok / tunnel URL — that goes in dev.yaml's webhook_base_url)
+export TENANT_DEV_WEBHOOK_SECRET="$(openssl rand -hex 32)"
 
 # Optional: API tokens that grant access to the dev tenant via /api/v1/*
 export TENANT_DEV_API_TOKENS="dev-token-1"
@@ -72,13 +74,13 @@ If any env var is missing, that test skips with a clear "missing live-test env v
 
 ### What each test does
 
-| Test | Real call | Cost |
-|---|---|---|
-| `test_groq_stt_smoke`         | Sends a 1s synthetic tone to Whisper | ~$0.001 |
-| `test_gemini_llm_smoke`       | One short JSON-mode prompt        | ~$0.0001 |
-| `test_gemini_llm_streaming_smoke` | One streaming prompt              | ~$0.0001 |
-| `test_sarvam_tts_smoke`       | Synthesize ~30 chars of Hindi      | ~$0.001 |
-| `test_twilio_credential_probe`| Lists recent calls (no call placed)| Free    |
+| Test                              | Real call                            | Cost     |
+| --------------------------------- | ------------------------------------ | -------- |
+| `test_groq_stt_smoke`             | Sends a 1s synthetic tone to Whisper | ~$0.001  |
+| `test_gemini_llm_smoke`           | One short JSON-mode prompt           | ~$0.0001 |
+| `test_gemini_llm_streaming_smoke` | One streaming prompt                 | ~$0.0001 |
+| `test_sarvam_tts_smoke`           | Synthesize ~30 chars of Hindi        | ~$0.001  |
+| `test_twilio_credential_probe`    | Lists recent calls (no call placed)  | Free     |
 
 ---
 
@@ -95,11 +97,11 @@ Edit two fields with your real values (everything else is already configured):
 ```yaml
 pipeline:
   telephony:
-    from_number: "+1XXXXXXXXXX"          # your Twilio number
-    webhook_base_url: "https://abc.ngrok.app/api/v1/telephony"  # set after ngrok starts
+    from_number: "+1XXXXXXXXXX" # your Twilio number
+    webhook_base_url: "https://abc.ngrok.app/api/v1/telephony" # set after ngrok starts
 
 phone_numbers:
-  - "+1XXXXXXXXXX"                       # same Twilio number
+  - "+1XXXXXXXXXX" # same Twilio number
 ```
 
 #### 2. Start ngrok
@@ -190,14 +192,14 @@ Total: **~$0.06 per call**.
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `place_test_call.py` says "webhook_base_url is not set to HTTPS" | YAML still has the `CHANGE-ME` placeholder | Update `webhook_base_url` with your ngrok URL |
-| Twilio rings but call drops immediately | Webhook returns 5xx | Check server logs; usually a missing env var on the dev tenant |
-| Agent rings but stays silent | TTS failed | Check `TENANT_DEV_SARVAM_KEY`; smoke test the TTS adapter |
-| `MissingEnvError` on call start | Tenant YAML references an env var that isn't set in the shell | Re-export the env var; restart uvicorn |
-| Call connects but agent doesn't react to your speech | STT not returning text | Check `TENANT_DEV_GROQ_KEY`; run the STT smoke test |
-| ngrok tunnel keeps reconnecting | Free ngrok tier has session limits | Reserve a static subdomain or use a paid tier |
+| Symptom                                                          | Likely cause                                                  | Fix                                                            |
+| ---------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------------- |
+| `place_test_call.py` says "webhook_base_url is not set to HTTPS" | YAML still has the `CHANGE-ME` placeholder                    | Update `webhook_base_url` with your ngrok URL                  |
+| Twilio rings but call drops immediately                          | Webhook returns 5xx                                           | Check server logs; usually a missing env var on the dev tenant |
+| Agent rings but stays silent                                     | TTS failed                                                    | Check `TENANT_DEV_SARVAM_KEY`; smoke test the TTS adapter      |
+| `MissingEnvError` on call start                                  | Tenant YAML references an env var that isn't set in the shell | Re-export the env var; restart uvicorn                         |
+| Call connects but agent doesn't react to your speech             | STT not returning text                                        | Check `TENANT_DEV_GROQ_KEY`; run the STT smoke test            |
+| ngrok tunnel keeps reconnecting                                  | Free ngrok tier has session limits                            | Reserve a static subdomain or use a paid tier                  |
 
 ---
 
