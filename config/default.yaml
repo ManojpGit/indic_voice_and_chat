@@ -1,0 +1,87 @@
+app:
+  name: vox-agent
+  version: 1.0.0
+  debug: false
+  log_level: INFO
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  workers: 4
+
+redis:
+  url: redis://localhost:6379/0
+  session_ttl_seconds: 1800
+
+database:
+  url: postgresql+asyncpg://vox:vox@localhost:5432/vox_agent
+
+pipeline:
+  stt:
+    provider: sarvam
+    model: saaras:v2
+    language: hi-IN
+    confidence_threshold: 0.6
+    fallback_provider: groq
+
+  llm:
+    provider: groq
+    model: llama-3.1-70b-versatile
+    temperature: 0.7
+    max_tokens: 512
+    response_format: json
+
+  tts:
+    provider: sarvam
+    language: hi-IN
+    voice_id: null
+    speed: 1.0
+
+  telephony:
+    provider: twilio
+    from_number: "+91XXXXXXXXXX"
+    webhook_base_url: https://your-domain.example.com/api/v1/telephony
+
+  vector_store:
+    provider: faiss
+    index_path: ./data/faiss_index
+    embedding_model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+    embedding_dim: 384
+
+voice_pipeline:
+  vad:
+    model: silero
+    threshold: 0.5
+    min_speech_duration_ms: 250
+    min_silence_duration_ms: 600
+  silence:
+    post_response_timeout_s: 5
+    extended_timeout_s: 12
+    max_call_duration_s: 420
+  interruption:
+    enabled: true
+    detection_interval_ms: 20
+
+rag:
+  chunking:
+    strategy: recursive
+    chunk_size: 500
+    chunk_overlap: 100
+  retrieval:
+    strategy: hybrid
+    top_k: 5
+    reranking: true
+    reranker_model: cross-encoder/ms-marco-MiniLM-L-6-v2
+    reranker_top_n: 3
+    bm25_weight: 0.3
+    dense_weight: 0.7
+    similarity_threshold: 0.4
+
+compliance:
+  calling_hours:
+    start: "10:00"
+    end: "19:00"
+  dnd_check_enabled: true
+  ai_disclosure: true
+  max_retry_attempts: 3
+  retry_interval_hours: 2

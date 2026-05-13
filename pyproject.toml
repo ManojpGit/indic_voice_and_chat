@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vox-agent"
+version = "1.0.0"
+description = "Vendor-agnostic agentic framework for multilingual VoiceBot and ChatBot"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Betstudio" }]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "pyyaml>=6.0",
+    "redis>=5.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "faiss-cpu>=1.7.4",
+    "numpy>=1.26",
+    "httpx>=0.27",
+    "groq>=0.11",
+    "twilio>=9.0",
+    "python-json-logger>=2.0",
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+    "rank-bm25>=0.2.2",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+voice = [
+    "silero-vad>=5.1",
+    "torch>=2.2",
+]
+embeddings = [
+    "sentence-transformers>=2.7",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.12",
+    "pytest-cov>=4.1",
+    "respx>=0.21",
+    "fakeredis>=2.21",
+    "aiosqlite>=0.20",
+    "ruff>=0.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B"]
+ignore = ["E501"]

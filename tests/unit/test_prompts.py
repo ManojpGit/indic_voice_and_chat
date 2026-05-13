@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+import json
+
+import yaml
+
+from src.dialogue.prompts import (
+    CHATBOT_RESPONSE_SCHEMA,
+    VOICEBOT_RESPONSE_SCHEMA,
+    VoiceBotScript,
+    build_chatbot_system_prompt,
+    build_voicebot_system_prompt,
+)
+from src.dialogue.slots import SlotSchema
+
+
+SCRIPT = {
+    "agent_name": "Priya",
+    "agent_role": "Customer Engagement Specialist",
+    "company_name": "Acme Telecom",
+    "language_default": "hi",
+    "opening": "Namaste {lead_name} ji, main Priya bol rahi hoon.",
+    "talking_points": ["Plan B has 500GB data", "Limited offer"],
+    "qualifying_questions": ["Aap kaunsa plan use kar rahe hain?"],
+    "objection_responses": {
+        "busy": "Bilkul, kal call kar sakti hoon?",
+        "is_ai": "Main ek AI hoon.",
+    },
+    "closing": {"positive": "Dhanyavaad!", "negative": "Koi baat nahi."},
+}
+
+SLOT_YAML = """
+lead_name: { type: string, required: true }
+interest_level: { type: enum, required: true, values: [hot, warm, cold] }
+"""
+
+
+def test_voicebot_prompt_includes_all_sections() -> None:
+    script = VoiceBotScript.from_campaign_yaml(SCRIPT)
+    schema = SlotSchema.from_campaign_yaml(yaml.safe_load(SLOT_YAML))
+    prompt = build_voicebot_system_prompt(script, schema, lead_data={"lead_name": "Manoj"})
+
+    assert "Priya" in prompt
+    assert "Acme Telecom" in prompt
+    assert "Plan B has 500GB data" in prompt
+    assert "Aap kaunsa plan use kar rahe hain?" in prompt
+    assert "is_ai" in prompt
+    assert "Manoj" in prompt
+    assert "* lead_name" in prompt
+    assert "* interest_level" in prompt
+    # JSON schema embedded
+    assert '"response_text"' in prompt
+    assert '"updated_slots"' in prompt
+
+
+def test_voicebot_prompt_mentions_required_slots_with_marker() -> None:
+    script = VoiceBotScript.from_campaign_yaml(SCRIPT)
+    schema = SlotSchema.from_campaign_yaml(yaml.safe_load(SLOT_YAML))
+    prompt = build_voicebot_system_prompt(script, schema)
+    # required slots get *
+    assert "* lead_name" in prompt
+    assert "* interest_level" in prompt
+
+
+def test_voicebot_prompt_extra_directives_appended() -> None:
+    script = VoiceBotScript.from_campaign_yaml(SCRIPT)
+    schema = SlotSchema()
+    prompt = build_voicebot_system_prompt(
+        script, schema, extra_directives=["Be polite", "Use formal Hindi"]
+    )
+    assert "Be polite" in prompt
+    assert "Use formal Hindi" in prompt
+
+
+def test_chatbot_prompt_with_rag_context() -> None:
+    prompt = build_chatbot_system_prompt(
+        company_name="Acme",
+        language_default="en",
+        rag_context="Doc 1: Plan A has 100GB.\nDoc 2: Plan B has 500GB.",
+    )
+    assert "Acme" in prompt
+    assert "Plan B has 500GB" in prompt
+    assert "do not invent" in prompt
+    assert '"sources_used"' in prompt
+
+
+def test_response_schemas_are_valid_json() -> None:
+    # Smoke test — assert they're JSON-serializable
+    json.dumps(VOICEBOT_RESPONSE_SCHEMA)
+    json.dumps(CHATBOT_RESPONSE_SCHEMA)

@@ -1,0 +1,44 @@
+id: t_example
+slug: example
+name: Example Telecom
+status: active
+default_language: hi
+webhook_secret_env: TENANT_EXAMPLE_WEBHOOK_SECRET
+
+pipeline:
+  stt:
+    provider: sarvam
+    model: saaras:v2
+    language: hi-IN
+    api_key_env: TENANT_EXAMPLE_SARVAM_KEY
+  llm:
+    provider: groq
+    model: llama-3.1-70b-versatile
+    temperature: 0.7
+    api_key_env: TENANT_EXAMPLE_GROQ_KEY
+  tts:
+    provider: sarvam
+    language: hi-IN
+    voice_id: meera
+    api_key_env: TENANT_EXAMPLE_SARVAM_KEY
+  telephony:
+    provider: twilio
+    from_number: "+918888888888"
+    account_sid_env: TENANT_EXAMPLE_TWILIO_SID
+    auth_token_env: TENANT_EXAMPLE_TWILIO_TOKEN
+  vector_store:
+    provider: faiss
+
+compliance:
+  calling_hours_start: "10:00"
+  calling_hours_end: "19:00"
+  dnd_check_enabled: true
+
+crm:
+  kind: fake
+
+whatsapp:
+  provider: fake
+
+phone_numbers:
+  - "+918888888888"
