@@ -67,7 +67,7 @@ async def test_synthesize_stream_yields_per_segment(adapter: SarvamTTSAdapter) -
 
 def test_get_available_voices(adapter: SarvamTTSAdapter) -> None:
     hi = adapter.get_available_voices("hi-IN")
-    assert any(v["voice_id"] == "meera" for v in hi)
+    assert any(v["voice_id"] == "anushka" for v in hi)
     assert adapter.get_available_voices("xx-XX") == []
 
 

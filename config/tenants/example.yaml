@@ -19,7 +19,7 @@ pipeline:
   tts:
     provider: sarvam
     language: hi-IN
-    voice_id: meera
+    voice_id: anushka
     api_key_env: TENANT_EXAMPLE_SARVAM_KEY
   telephony:
     provider: twilio

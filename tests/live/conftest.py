@@ -15,9 +15,24 @@ import os
 from pathlib import Path
 
 import pytest
+from dotenv import load_dotenv
 
 from src.auth.context import TenantContext
 from src.config_tenant import TenantSettings, load_tenant
+
+# Auto-load a project-root ``.env`` so live keys can live in one
+# gitignored file instead of needing to be ``export``-ed every session.
+#
+# ``override=True`` is deliberate here: the project-root ``tests/conftest.py``
+# pre-sets dummy values (``GROQ_API_KEY=test-groq-key`` etc.) at import time
+# so non-live unit tests don't blow up on missing env vars. For live tests,
+# those dummies would shadow the real ``.env`` values AND defeat the
+# ``${VAR}`` interpolation in the per-tenant aliases. The live conftest
+# only loads when live tests are in scope, so this override never affects
+# the mocked unit suite.
+_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+if _ENV_FILE.exists():
+    load_dotenv(_ENV_FILE, override=True)
 
 
 def _live_enabled() -> bool:

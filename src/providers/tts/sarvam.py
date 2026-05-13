@@ -20,12 +20,27 @@ from src.interfaces.tts import ITTSProvider, TTSConfig, TTSResult
 
 
 SARVAM_BASE_URL = "https://api.sarvam.ai"
-DEFAULT_MODEL = "bulbul:v1"
+DEFAULT_MODEL = "bulbul:v2"
+DEFAULT_SPEAKER = "anushka"
 
-# Per Sarvam docs (subset).
+# Per Sarvam's current ``bulbul:v2`` speaker roster. ``bulbul:v1`` was
+# retired in 2025 (the API now only accepts ``bulbul:v2``, ``bulbul:v3``,
+# or ``bulbul:v3-beta``). ``meera`` / ``arjun`` no longer exist as speakers.
 LANGUAGE_VOICES: dict[str, list[dict]] = {
-    "hi-IN": [{"voice_id": "meera", "gender": "female"}, {"voice_id": "arjun", "gender": "male"}],
-    "en-IN": [{"voice_id": "maya", "gender": "female"}, {"voice_id": "amol", "gender": "male"}],
+    "hi-IN": [
+        {"voice_id": "anushka", "gender": "female"},
+        {"voice_id": "manisha", "gender": "female"},
+        {"voice_id": "vidya", "gender": "female"},
+        {"voice_id": "abhilash", "gender": "male"},
+        {"voice_id": "karun", "gender": "male"},
+        {"voice_id": "hitesh", "gender": "male"},
+    ],
+    "en-IN": [
+        {"voice_id": "anushka", "gender": "female"},
+        {"voice_id": "manisha", "gender": "female"},
+        {"voice_id": "abhilash", "gender": "male"},
+        {"voice_id": "karun", "gender": "male"},
+    ],
 }
 
 
@@ -51,7 +66,7 @@ class SarvamTTSAdapter(ITTSProvider):
         body: dict[str, Any] = {
             "inputs": [text],
             "target_language_code": config.language,
-            "speaker": config.voice_id or "meera",
+            "speaker": config.voice_id or DEFAULT_SPEAKER,
             "speech_sample_rate": config.sample_rate,
             "model": self._model,
             "pace": config.speed,
