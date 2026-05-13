@@ -64,6 +64,16 @@ class MissingEnvError(RuntimeError):
     """Raised when a tenant YAML references an env var that isn't set."""
 
 
+class TenantConfigError(ValueError):
+    """Raised when a tenant config is structurally incomplete.
+
+    The most common case: a provider is declared but its credential env-var
+    name is missing, which would silently fall back to the global platform
+    key at runtime. We raise this at load time so misconfigured tenants are
+    caught on bootstrap rather than billing the platform.
+    """
+
+
 # --- Sub-schemas --------------------------------------------------------
 
 
@@ -176,7 +186,14 @@ def _resolve_dir(tenant_dir: Optional[Path]) -> Path:
 
 
 def load_tenant(slug: str, tenant_dir: Optional[Path] = None) -> TenantSettings:
-    """Load + validate one tenant by slug."""
+    """Load + validate one tenant by slug.
+
+    Validation runs in two stages:
+    1. Pydantic schema check (types, required fields).
+    2. ``validate_credentials`` — every declared provider must also declare
+       its credential env-var names so we never silently fall back to a
+       platform-wide key at runtime.
+    """
     base = _resolve_dir(tenant_dir)
     path = base / f"{slug}.yaml"
     if not path.exists():
@@ -186,9 +203,55 @@ def load_tenant(slug: str, tenant_dir: Optional[Path] = None) -> TenantSettings:
     if not isinstance(data, dict):
         raise ValueError(f"{path}: top-level YAML must be a mapping")
     try:
-        return TenantSettings(**data)
+        settings = TenantSettings(**data)
     except ValidationError as e:
         raise ValueError(f"{path}: invalid tenant config: {e}") from e
+    validate_credentials(settings, source=str(path))
+    return settings
+
+
+# --- Credential validation ----------------------------------------------
+
+
+def validate_credentials(settings: TenantSettings, *, source: str = "") -> None:
+    """Ensure every declared provider also declares its credential env vars.
+
+    A tenant *may* omit a layer entirely (e.g. chat-only tenants don't need
+    telephony). But if ``provider`` is set, the env-var fields that supply
+    that provider's credentials must also be set. This closes the
+    silent-fallback footgun where an under-configured tenant would bill the
+    platform's API keys.
+
+    Raises ``TenantConfigError`` listing all gaps so admins fix them in one
+    round-trip rather than chasing missing fields one at a time.
+    """
+    gaps: list[str] = []
+    p = settings.pipeline
+
+    if p.stt.provider and not p.stt.api_key_env:
+        gaps.append(f"pipeline.stt.api_key_env (provider={p.stt.provider!r})")
+    if p.llm.provider and not p.llm.api_key_env:
+        gaps.append(f"pipeline.llm.api_key_env (provider={p.llm.provider!r})")
+    if p.tts.provider and not p.tts.api_key_env:
+        gaps.append(f"pipeline.tts.api_key_env (provider={p.tts.provider!r})")
+    if p.telephony.provider:
+        if not p.telephony.account_sid_env:
+            gaps.append(
+                f"pipeline.telephony.account_sid_env (provider={p.telephony.provider!r})"
+            )
+        if not p.telephony.auth_token_env:
+            gaps.append(
+                f"pipeline.telephony.auth_token_env (provider={p.telephony.provider!r})"
+            )
+
+    if gaps:
+        prefix = f"{source}: " if source else ""
+        raise TenantConfigError(
+            f"{prefix}tenant {settings.slug!r} is missing credential env-var "
+            f"references for declared providers: {gaps}. Without these, the "
+            f"adapter falls back to the platform-wide env vars at runtime, "
+            f"which silently bills the platform for the tenant's calls."
+        )
 
 
 def discover_tenant_slugs(tenant_dir: Optional[Path] = None) -> list[str]:

@@ -6,11 +6,13 @@ import pytest
 
 from src.config_tenant import (
     MissingEnvError,
+    TenantConfigError,
     TenantSettings,
     discover_tenant_slugs,
     load_all_tenants,
     load_tenant,
     merge_provider_config,
+    validate_credentials,
 )
 
 
@@ -156,3 +158,141 @@ def test_example_yaml_file_loads() -> None:
     t = load_tenant("example", tenant_dir=Path("config/tenants"))
     assert t.slug == "example"
     assert t.pipeline.stt.provider == "sarvam"
+
+
+# --- Credential validation ---------------------------------------------
+
+
+def test_validate_credentials_passes_on_no_providers_configured() -> None:
+    """A tenant that doesn't declare any providers is fine — nothing to validate."""
+    t = TenantSettings(id="t1", slug="t1", name="T1")
+    validate_credentials(t)
+
+
+def test_validate_credentials_passes_when_all_keys_declared() -> None:
+    from src.config_tenant import (
+        TenantLLMConfig, TenantPipelineConfig, TenantSTTConfig,
+        TenantTTSConfig, TenantTelephonyConfig,
+    )
+    t = TenantSettings(
+        id="t1", slug="t1", name="T1",
+        pipeline=TenantPipelineConfig(
+            stt=TenantSTTConfig(provider="sarvam", api_key_env="K1"),
+            llm=TenantLLMConfig(provider="groq", api_key_env="K2"),
+            tts=TenantTTSConfig(provider="sarvam", api_key_env="K1"),
+            telephony=TenantTelephonyConfig(
+                provider="twilio", account_sid_env="SID", auth_token_env="TOK",
+            ),
+        ),
+    )
+    validate_credentials(t)
+
+
+def test_validate_credentials_raises_when_stt_provider_lacks_key() -> None:
+    from src.config_tenant import TenantPipelineConfig, TenantSTTConfig
+    t = TenantSettings(
+        id="t1", slug="t1", name="T1",
+        pipeline=TenantPipelineConfig(stt=TenantSTTConfig(provider="sarvam")),
+    )
+    with pytest.raises(TenantConfigError, match="pipeline.stt.api_key_env"):
+        validate_credentials(t)
+
+
+def test_validate_credentials_raises_when_llm_provider_lacks_key() -> None:
+    from src.config_tenant import TenantLLMConfig, TenantPipelineConfig
+    t = TenantSettings(
+        id="t1", slug="t1", name="T1",
+        pipeline=TenantPipelineConfig(llm=TenantLLMConfig(provider="groq")),
+    )
+    with pytest.raises(TenantConfigError, match="pipeline.llm.api_key_env"):
+        validate_credentials(t)
+
+
+def test_validate_credentials_raises_when_telephony_missing_sid() -> None:
+    from src.config_tenant import TenantPipelineConfig, TenantTelephonyConfig
+    t = TenantSettings(
+        id="t1", slug="t1", name="T1",
+        pipeline=TenantPipelineConfig(
+            telephony=TenantTelephonyConfig(provider="twilio", auth_token_env="TOK"),
+        ),
+    )
+    with pytest.raises(TenantConfigError, match="account_sid_env"):
+        validate_credentials(t)
+
+
+def test_validate_credentials_raises_when_telephony_missing_token() -> None:
+    from src.config_tenant import TenantPipelineConfig, TenantTelephonyConfig
+    t = TenantSettings(
+        id="t1", slug="t1", name="T1",
+        pipeline=TenantPipelineConfig(
+            telephony=TenantTelephonyConfig(provider="twilio", account_sid_env="SID"),
+        ),
+    )
+    with pytest.raises(TenantConfigError, match="auth_token_env"):
+        validate_credentials(t)
+
+
+def test_validate_credentials_collects_all_gaps_in_one_error() -> None:
+    """One error message should list every missing field — admins fix in one round-trip."""
+    from src.config_tenant import (
+        TenantLLMConfig, TenantPipelineConfig, TenantSTTConfig,
+        TenantTTSConfig, TenantTelephonyConfig,
+    )
+    t = TenantSettings(
+        id="t1", slug="t1", name="T1",
+        pipeline=TenantPipelineConfig(
+            stt=TenantSTTConfig(provider="sarvam"),       # missing api_key_env
+            llm=TenantLLMConfig(provider="groq"),         # missing api_key_env
+            tts=TenantTTSConfig(provider="sarvam"),       # missing api_key_env
+            telephony=TenantTelephonyConfig(provider="twilio"),  # missing sid + token
+        ),
+    )
+    with pytest.raises(TenantConfigError) as ei:
+        validate_credentials(t)
+    msg = str(ei.value)
+    # All five gaps should appear in the one error.
+    assert "pipeline.stt.api_key_env" in msg
+    assert "pipeline.llm.api_key_env" in msg
+    assert "pipeline.tts.api_key_env" in msg
+    assert "account_sid_env" in msg
+    assert "auth_token_env" in msg
+
+
+def test_validate_credentials_includes_source_in_error() -> None:
+    """When called via load_tenant, the source path appears in the message
+    so admins can find the offending YAML."""
+    from src.config_tenant import TenantPipelineConfig, TenantSTTConfig
+    t = TenantSettings(
+        id="t1", slug="acme", name="T1",
+        pipeline=TenantPipelineConfig(stt=TenantSTTConfig(provider="sarvam")),
+    )
+    with pytest.raises(TenantConfigError, match="config/tenants/acme.yaml"):
+        validate_credentials(t, source="config/tenants/acme.yaml")
+
+
+def test_load_tenant_rejects_provider_without_key(tenant_dir: Path) -> None:
+    """End-to-end: load_tenant fails on bootstrap, not on first request."""
+    _write(tenant_dir / "broken.yaml", """
+id: t_broken
+slug: broken
+name: Broken
+pipeline:
+  stt: {provider: sarvam}
+""")
+    with pytest.raises(TenantConfigError, match="api_key_env"):
+        load_tenant("broken", tenant_dir)
+
+
+def test_load_tenant_accepts_unset_provider(tenant_dir: Path) -> None:
+    """If provider is omitted, no validation is needed for that layer."""
+    _write(tenant_dir / "chat_only.yaml", """
+id: t_chat
+slug: chat_only
+name: Chat-only tenant
+pipeline:
+  llm: {provider: groq, api_key_env: GROQ_KEY}
+""")
+    t = load_tenant("chat_only", tenant_dir)
+    assert t.pipeline.llm.provider == "groq"
+    assert t.pipeline.stt.provider is None
+    assert t.pipeline.telephony.provider is None
