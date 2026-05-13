@@ -15,7 +15,9 @@ from src.interfaces.stt import ISTTProvider
 from src.interfaces.telephony import ITelephonyProvider
 from src.interfaces.tts import ITTSProvider
 from src.interfaces.vector_store import IVectorStore
+from src.providers.llm.gemini import GeminiLLMAdapter
 from src.providers.llm.groq import GroqLLMAdapter
+from src.providers.stt.groq_whisper import GroqSTTAdapter
 from src.providers.stt.sarvam import SarvamSTTAdapter
 from src.providers.telephony.twilio import TwilioAdapter
 from src.providers.tts.sarvam import SarvamTTSAdapter
@@ -23,10 +25,12 @@ from src.providers.vector_store.faiss_store import FAISSAdapter
 
 STT_PROVIDERS: dict[str, type[ISTTProvider]] = {
     "sarvam": SarvamSTTAdapter,
+    "groq": GroqSTTAdapter,
 }
 
 LLM_PROVIDERS: dict[str, type[ILLMProvider]] = {
     "groq": GroqLLMAdapter,
+    "gemini": GeminiLLMAdapter,
 }
 
 TTS_PROVIDERS: dict[str, type[ITTSProvider]] = {

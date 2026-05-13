@@ -24,13 +24,16 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from src.api import api_router
+from src.api import telephony_hooks
 from src.auth.middleware import (
     InMemoryTenantResolver,
     set_admin_tokens,
     set_tenant_resolver,
 )
+from src.bootstrap import build_provider_registry, make_bridge_factory
 from src.config import Settings, get_settings
 from src.config_tenant import TenantSettings, discover_tenant_slugs, load_tenant
+from src.dialogue.context import SessionStore
 from src.models.database import dispose_engine, get_engine, get_sessionmaker
 from src.utils.logging import configure_logging, get_logger
 
@@ -76,10 +79,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_admin_tokens(_admin_tokens_from_env())
     app.state.tenants = tenants
 
+    # --- Bridge factory: turn an inbound Twilio WS into a live agent ----
+    providers = build_provider_registry(
+        global_defaults={
+            "stt": settings.pipeline.stt.model_dump(),
+            "llm": settings.pipeline.llm.model_dump(),
+            "tts": settings.pipeline.tts.model_dump(),
+            "telephony": settings.pipeline.telephony.model_dump(),
+            "vector_store": settings.pipeline.vector_store.model_dump(),
+        },
+    )
+    base_session_store = SessionStore(
+        redis=redis_client, ttl_seconds=settings.redis.session_ttl_seconds
+    )
+    telephony_hooks.set_bridge_factory(
+        make_bridge_factory(providers=providers, session_store=base_session_store)
+    )
+    app.state.providers = providers
+
     try:
         yield
     finally:
         log.info("shutdown")
+        telephony_hooks.set_bridge_factory(None)
         await redis_client.aclose()
         await dispose_engine()
         set_tenant_resolver(None)

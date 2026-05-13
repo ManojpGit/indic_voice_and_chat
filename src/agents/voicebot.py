@@ -12,6 +12,7 @@ provides.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -22,6 +23,9 @@ from src.dialogue.response_parser import VoiceBotResponse, parse_voicebot_respon
 from src.dialogue.slots import SlotFiller, SlotSchema
 from src.interfaces.llm import LLMMessage
 from src.pipeline.engine import AudioSink, PipelineEngine, TurnResult
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -69,6 +73,47 @@ class VoiceBotAgent(BaseAgent):
         """Move from IDLE to LISTENING. Call once when the call connects."""
         await self.state.fire_if_possible(Event.CALL_CONNECTED)
         await self.persist_state()
+
+    async def play_opening(self, audio_sink: AudioSink) -> None:
+        """Speak the campaign opening line as the agent's first turn.
+
+        For outbound campaigns the agent must speak first — the user just
+        answered the phone and is silent. We synthesize the script's
+        opening line, push the audio through ``audio_sink``, append it to
+        the conversation history, and stay in LISTENING for the user's
+        reply. Skips silently if there's no opening configured.
+        """
+        opening = (self._script.opening or "").strip()
+        if not opening:
+            return
+        # Substitute simple template tokens with known lead data.
+        rendered = opening.format(**self._template_vars())
+
+        # The TTS goes through the pipeline engine's TTS provider so the
+        # adapter-level streaming + sample-rate handling stays consistent
+        # with the per-turn synthesis path.
+        from src.interfaces.tts import TTSConfig as _TTSConfig
+        try:
+            tts_result = await self._engine._tts.synthesize(  # type: ignore[attr-defined]
+                rendered, _TTSConfig(language=self._script.language_default + "-IN"
+                                     if len(self._script.language_default) == 2
+                                     else self._script.language_default),
+            )
+        except Exception:
+            log.exception("opening synthesis failed; skipping")
+            return
+        if tts_result.audio:
+            await audio_sink(tts_result.audio)
+        self.session.turns.append(LLMMessage(role="assistant", content=rendered))
+        await self.persist_turn("agent", rendered, metadata={"phase": "opening"})
+
+    def _template_vars(self) -> dict[str, str]:
+        data = dict(self.session.lead_data or {})
+        # Common fallbacks so f-string substitution doesn't KeyError.
+        data.setdefault("lead_name", data.get("name", "ji"))
+        data.setdefault("agent_name", self._script.agent_name)
+        data.setdefault("company_name", self._script.company_name)
+        return {k: str(v) for k, v in data.items()}
 
     async def handle_turn(self, captured_audio: bytes, audio_sink: AudioSink) -> TurnOutcome:
         """Drive one user-utterance -> agent-response cycle.

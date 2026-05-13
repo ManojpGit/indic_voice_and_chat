@@ -1,0 +1,74 @@
+# Dev / smoke-test tenant.
+#
+# Set these environment variables locally (e.g. in a gitignored .env, or
+# your shell rc) before running live tests or placing a real call:
+#
+#   export TENANT_DEV_GROQ_KEY=gsk_...           # Groq Whisper STT + (unused here) Groq LLM
+#   export TENANT_DEV_GEMINI_KEY=AIza...         # Google Gemini LLM
+#   export TENANT_DEV_SARVAM_KEY=...             # Sarvam TTS
+#   export TENANT_DEV_TWILIO_SID=AC...           # Twilio Account SID
+#   export TENANT_DEV_TWILIO_TOKEN=...           # Twilio Auth Token
+#   export TENANT_DEV_WEBHOOK_SECRET=...         # used to verify inbound webhook signatures
+#
+# To grant tenant API access, also set:
+#   export TENANT_DEV_API_TOKENS=dev-token-1,dev-token-2
+#
+# Twilio's voice webhook + Media Streams URL must point at a publicly
+# reachable host (use ngrok during local dev — see docs/live-testing.md).
+# Update ``webhook_base_url`` below before placing a real call.
+
+id: t_dev
+slug: dev
+name: Dev / Smoke Test
+status: active
+default_language: hi
+webhook_secret_env: TENANT_DEV_WEBHOOK_SECRET
+
+pipeline:
+  stt:
+    provider: groq
+    model: whisper-large-v3
+    language: hi-IN
+    api_key_env: TENANT_DEV_GROQ_KEY
+
+  llm:
+    provider: gemini
+    model: gemini-2.0-flash
+    temperature: 0.5
+    max_tokens: 256
+    response_format: json
+    api_key_env: TENANT_DEV_GEMINI_KEY
+
+  tts:
+    provider: sarvam
+    language: hi-IN
+    voice_id: meera
+    speed: 1.0
+    api_key_env: TENANT_DEV_SARVAM_KEY
+
+  telephony:
+    provider: twilio
+    from_number: "+1XXXXXXXXXX"           # override with your Twilio number
+    webhook_base_url: "https://CHANGE-ME.ngrok.app/api/v1/telephony"
+    account_sid_env: TENANT_DEV_TWILIO_SID
+    auth_token_env: TENANT_DEV_TWILIO_TOKEN
+
+  vector_store:
+    provider: faiss
+
+compliance:
+  calling_hours_start: "09:00"
+  calling_hours_end: "21:00"
+  dnd_check_enabled: true
+  ai_disclosure: true
+
+crm:
+  kind: fake
+
+whatsapp:
+  provider: fake
+
+# The Twilio number(s) you own. Inbound voice webhooks resolve to this
+# tenant by matching the ``To`` form param against this list.
+phone_numbers:
+  - "+1XXXXXXXXXX"
