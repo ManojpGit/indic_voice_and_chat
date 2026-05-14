@@ -55,19 +55,27 @@ _STATUS_MAP = {
 class ExotelAdapter(ITelephonyProvider):
     def __init__(self, config: dict[str, Any]) -> None:
         # Per-tenant credentials get injected via the tenant-aware factory.
-        api_key = config.get("api_key") or config.get("account_sid") or os.environ.get("EXOTEL_API_KEY")
-        api_token = config.get("api_token") or config.get("auth_token") or os.environ.get("EXOTEL_API_TOKEN")
-        # Exotel's account SID is sometimes called ``sid`` and sometimes
-        # ``subdomain`` — both forms appear in their docs. Be lenient.
+        api_key = config.get("api_key") or os.environ.get("EXOTEL_API_KEY")
+        api_token = (
+            config.get("api_token")
+            or config.get("auth_token")
+            or os.environ.get("EXOTEL_API_TOKEN")
+        )
+        # Exotel's account identifier is variously called ``account_sid``,
+        # ``sid``, ``subdomain``, or ``account_sid_exotel`` across their docs.
+        # Be lenient about the config key but DO NOT fall through to api_key —
+        # treating the API key as an account SID hits the wrong URL path.
         self._account_sid = (
-            config.get("account_sid_exotel")
+            config.get("account_sid")
+            or config.get("account_sid_exotel")
             or config.get("sid")
-            or api_key
+            or config.get("subdomain")
+            or os.environ.get("EXOTEL_ACCOUNT_SID")
         )
         if not (api_key and api_token and self._account_sid):
             raise ValueError(
                 "ExotelAdapter requires api_key + api_token + account_sid "
-                "(or EXOTEL_API_KEY / EXOTEL_API_TOKEN env vars)"
+                "(or EXOTEL_API_KEY / EXOTEL_API_TOKEN / EXOTEL_ACCOUNT_SID env vars)"
             )
         self._auth = (api_key, api_token)
         self._base_url = config.get("base_url", EXOTEL_BASE_URL).rstrip("/")

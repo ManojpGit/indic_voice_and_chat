@@ -140,5 +140,34 @@ async def test_stream_audio_out_not_implemented(adapter: ExotelAdapter) -> None:
 async def test_constructor_requires_credentials(monkeypatch) -> None:
     monkeypatch.delenv("EXOTEL_API_KEY", raising=False)
     monkeypatch.delenv("EXOTEL_API_TOKEN", raising=False)
+    monkeypatch.delenv("EXOTEL_ACCOUNT_SID", raising=False)
     with pytest.raises(ValueError):
         ExotelAdapter({})
+
+
+@pytest.mark.asyncio
+async def test_account_sid_does_not_shadow_to_api_key(monkeypatch) -> None:
+    """Regression: passing ``account_sid`` separately must not get swallowed
+    by the api_key fallback chain. Previously the adapter treated
+    ``config['account_sid']`` as a fallback for the API key AND failed to
+    read it as the account SID, so the request URL silently pointed at
+    ``/v1/Accounts/<api_key>/...``."""
+    monkeypatch.delenv("EXOTEL_API_KEY", raising=False)
+    monkeypatch.delenv("EXOTEL_API_TOKEN", raising=False)
+    monkeypatch.delenv("EXOTEL_ACCOUNT_SID", raising=False)
+    a = ExotelAdapter({
+        "api_key": "the-key",
+        "api_token": "the-token",
+        "account_sid": "myco",
+    })
+    assert a._account_sid == "myco"
+    assert a._auth == ("the-key", "the-token")
+
+
+@pytest.mark.asyncio
+async def test_account_sid_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("EXOTEL_API_KEY", "k")
+    monkeypatch.setenv("EXOTEL_API_TOKEN", "t")
+    monkeypatch.setenv("EXOTEL_ACCOUNT_SID", "myco-env")
+    a = ExotelAdapter({})
+    assert a._account_sid == "myco-env"
