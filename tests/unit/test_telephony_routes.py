@@ -164,3 +164,106 @@ def test_websocket_drives_registered_bridge_with_tenant() -> None:
         set_tenant_resolver(None)
 
     assert received == [("dev", "hello")]
+
+
+# --- Exotel routes -----------------------------------------------------
+
+
+def test_exotel_voice_returns_xml_with_tenant_scoped_stream_url() -> None:
+    _register_dev_tenant_with_phone()
+    try:
+        app = _make_app()
+        client = TestClient(app)
+        resp = client.post("/telephony/exotel/voice", data={"To": "+18888888888"})
+        assert resp.status_code == 200, resp.text
+        body = resp.text
+        assert "<Response>" in body
+        assert "/api/v1/telephony/exotel/stream/dev" in body
+    finally:
+        set_tenant_resolver(None)
+
+
+def test_exotel_voice_unknown_number_returns_404() -> None:
+    _register_dev_tenant_with_phone()
+    try:
+        app = _make_app()
+        client = TestClient(app)
+        resp = client.post("/telephony/exotel/voice", data={"To": "+919999999999"})
+        assert resp.status_code == 404
+    finally:
+        set_tenant_resolver(None)
+
+
+def test_exotel_voice_outbound_resolves_tenant_by_from() -> None:
+    _register_dev_tenant_with_phone("+18888888888")
+    try:
+        app = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/telephony/exotel/voice",
+            data={
+                "To": "+919999999999",
+                "From": "+18888888888",
+                "Direction": "outbound-api",
+                "CallSid": "EXtest",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert "/exotel/stream/dev" in resp.text
+    finally:
+        set_tenant_resolver(None)
+
+
+def test_exotel_websocket_without_factory_closes() -> None:
+    _register_dev_tenant_with_phone()
+    telephony_hooks.set_exotel_bridge_factory(None)
+    try:
+        app = _make_app()
+        client = TestClient(app)
+        with client.websocket_connect("/telephony/exotel/stream/dev") as ws:
+            from starlette.websockets import WebSocketDisconnect
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_text()
+    finally:
+        set_tenant_resolver(None)
+
+
+def test_exotel_websocket_unknown_tenant_slug_closes() -> None:
+    _register_dev_tenant_with_phone()
+    try:
+        app = _make_app()
+        client = TestClient(app)
+        with client.websocket_connect("/telephony/exotel/stream/ghost") as ws:
+            from starlette.websockets import WebSocketDisconnect
+            with pytest.raises(WebSocketDisconnect):
+                ws.receive_text()
+    finally:
+        set_tenant_resolver(None)
+
+
+def test_exotel_websocket_drives_registered_bridge_with_tenant() -> None:
+    _register_dev_tenant_with_phone()
+    received: list[tuple[str, str]] = []
+
+    class MiniBridge:
+        def __init__(self, ws, tenant):
+            self._ws = ws
+            self._tenant = tenant
+
+        async def run(self):
+            msg = await self._ws.receive_text()
+            received.append((self._tenant.slug, msg))
+            await self._ws.send_text(f"ack:{self._tenant.slug}")
+
+    telephony_hooks.set_exotel_bridge_factory(lambda ws, tenant: MiniBridge(ws, tenant))
+    try:
+        app = _make_app()
+        client = TestClient(app)
+        with client.websocket_connect("/telephony/exotel/stream/dev") as ws:
+            ws.send_text("hello")
+            assert ws.receive_text() == "ack:dev"
+    finally:
+        telephony_hooks.set_exotel_bridge_factory(None)
+        set_tenant_resolver(None)
+
+    assert received == [("dev", "hello")]

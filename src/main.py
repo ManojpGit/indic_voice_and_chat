@@ -30,7 +30,11 @@ from src.auth.middleware import (
     set_admin_tokens,
     set_tenant_resolver,
 )
-from src.bootstrap import build_provider_registry, make_bridge_factory
+from src.bootstrap import (
+    build_provider_registry,
+    make_bridge_factory,
+    make_exotel_bridge_factory,
+)
 from src.config import Settings, get_settings
 from src.config_tenant import TenantSettings, discover_tenant_slugs, load_tenant
 from src.dialogue.context import SessionStore
@@ -95,6 +99,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     telephony_hooks.set_bridge_factory(
         make_bridge_factory(providers=providers, session_store=base_session_store)
     )
+    telephony_hooks.set_exotel_bridge_factory(
+        make_exotel_bridge_factory(providers=providers, session_store=base_session_store)
+    )
     app.state.providers = providers
 
     try:
@@ -102,6 +109,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         log.info("shutdown")
         telephony_hooks.set_bridge_factory(None)
+        telephony_hooks.set_exotel_bridge_factory(None)
         await redis_client.aclose()
         await dispose_engine()
         set_tenant_resolver(None)

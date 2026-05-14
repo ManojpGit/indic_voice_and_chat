@@ -30,6 +30,7 @@ from fastapi import WebSocket
 from src.agents.base import AgentSession
 from src.agents.state_machine import AgentStateMachine
 from src.agents.voicebot import VoiceBotAgent
+from src.api.telephony_exotel import ExotelBridgeConfig, ExotelMediaBridge
 from src.api.telephony_twilio import TwilioBridgeConfig, TwilioMediaBridge
 from src.auth.context import TenantContext
 from src.auth.registry import TenantProviders
@@ -223,6 +224,121 @@ class _AgentBridge(TwilioMediaBridge):
                     await self._on_media_frame(msg["media"])
                 elif event == "stop":
                     log.info("twilio stream stopped")
+                    break
+        finally:
+            await self._agent.handle_hangup()
+
+
+# --- Exotel bridge factory (shares the agent stack with Twilio) ----------
+
+
+def make_exotel_bridge_factory(
+    providers: TenantProviders,
+    session_store: SessionStore | None = None,
+    bridge_config: ExotelBridgeConfig | None = None,
+    script: VoiceBotScript = DEFAULT_DEMO_SCRIPT,
+) -> Callable[[WebSocket, TenantContext], ExotelMediaBridge]:
+    """Build an Exotel WS bridge per call, wired to the tenant's provider stack.
+
+    Identical agent assembly to ``make_bridge_factory`` (Twilio) — only the
+    last step differs: returns an ``_ExotelAgentBridge`` instead of an
+    ``_AgentBridge``. The agent itself is encoding-agnostic; only the bridge
+    knows whether to ship μ-law or PCM16 over the wire.
+    """
+    cfg = bridge_config or ExotelBridgeConfig()
+
+    def factory(websocket: WebSocket, tenant: TenantContext) -> ExotelMediaBridge:
+        stt = providers.get_stt(tenant)
+        llm = providers.get_llm(tenant)
+        tts = providers.get_tts(tenant)
+
+        store: SessionStore | None = None
+        if session_store is not None:
+            store = SessionStore(
+                redis=session_store.redis,
+                ttl_seconds=session_store.ttl,
+                tenant_id=tenant.id,
+            )
+
+        pipeline_cfg = PipelineConfig(
+            stt=STTConfig(language=tenant.settings.pipeline.stt.language or "hi-IN"),
+            llm=LLMConfig(
+                temperature=tenant.settings.pipeline.llm.temperature or 0.5,
+                max_tokens=tenant.settings.pipeline.llm.max_tokens or 256,
+                response_format=tenant.settings.pipeline.llm.response_format or "json",
+            ),
+            tts=TTSConfig(
+                language=tenant.settings.pipeline.tts.language or "hi-IN",
+                voice_id=tenant.settings.pipeline.tts.voice_id,
+                sample_rate=16000,
+            ),
+        )
+        engine = PipelineEngine(stt, llm, tts, pipeline_cfg)
+
+        import uuid
+
+        session_id = f"call_{uuid.uuid4().hex[:12]}"
+        session = AgentSession(session_id=session_id)
+        sm = AgentStateMachine()
+        agent = VoiceBotAgent(
+            session=session,
+            state_machine=sm,
+            slot_schema=SlotSchema(),
+            script=script,
+            engine=engine,
+            store=store,
+        )
+
+        log.info(
+            "exotel bridge factory built call",
+            extra={"tenant": tenant.slug, "session_id": session_id},
+        )
+
+        return _ExotelAgentBridge(
+            websocket=websocket,
+            agent=agent,
+            vad=EnergyVAD(sample_rate=16000, frame_ms=30, rms_threshold=300.0),
+            config=cfg,
+        )
+
+    return factory
+
+
+class _ExotelAgentBridge(ExotelMediaBridge):
+    """ExotelMediaBridge that plays the opening line once the stream starts.
+
+    Same ``start``-event ordering rule as the Twilio variant: ``_stream_sid``
+    isn't populated until Exotel sends ``start``, and ``_send_pcm`` early-returns
+    on a null stream sid — so the opening must wait for that event.
+    """
+
+    async def run(self) -> None:
+        import json
+
+        await self._agent.start()
+        opening_played = False
+        try:
+            while not self._stopped.is_set():
+                raw = await self._ws.receive_text()
+                msg = json.loads(raw)
+                event = msg.get("event")
+                if event == "connected":
+                    continue
+                if event == "start":
+                    self._stream_sid = (
+                        msg.get("stream_sid")
+                        or msg.get("start", {}).get("stream_sid")
+                        or msg.get("start", {}).get("streamSid")
+                    )
+                    log.info("exotel stream started", extra={"stream_sid": self._stream_sid})
+                    if not opening_played:
+                        opening_played = True
+                        await self._agent.play_opening(self._send_pcm)  # type: ignore[arg-type]
+                        log.info("agent opening played (exotel)", extra={"stream_sid": self._stream_sid})
+                elif event == "media":
+                    await self._on_media_frame(msg["media"])
+                elif event == "stop":
+                    log.info("exotel stream stopped")
                     break
         finally:
             await self._agent.handle_hangup()

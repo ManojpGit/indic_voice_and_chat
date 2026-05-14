@@ -19,6 +19,8 @@ from src.providers.llm.gemini import GeminiLLMAdapter
 from src.providers.llm.groq import GroqLLMAdapter
 from src.providers.stt.groq_whisper import GroqSTTAdapter
 from src.providers.stt.sarvam import SarvamSTTAdapter
+from src.providers.telephony.exotel import ExotelAdapter
+from src.providers.telephony.stringee import StringeeAdapter
 from src.providers.telephony.twilio import TwilioAdapter
 from src.providers.tts.sarvam import SarvamTTSAdapter
 from src.providers.vector_store.faiss_store import FAISSAdapter
@@ -39,6 +41,8 @@ TTS_PROVIDERS: dict[str, type[ITTSProvider]] = {
 
 TELEPHONY_PROVIDERS: dict[str, type[ITelephonyProvider]] = {
     "twilio": TwilioAdapter,
+    "exotel": ExotelAdapter,
+    "stringee": StringeeAdapter,
 }
 
 VECTOR_STORE_PROVIDERS: dict[str, type[IVectorStore]] = {
