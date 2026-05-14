@@ -187,36 +187,42 @@ def make_bridge_factory(
 
 
 class _AgentBridge(TwilioMediaBridge):
-    """Subclass of TwilioMediaBridge that plays an opening line on connect."""
+    """Subclass of TwilioMediaBridge that plays an opening line on connect.
+
+    Crucial ordering: Twilio sends ``connected`` then ``start`` events on
+    the WS before any media. ``_send_pcm`` needs ``self._stream_sid``,
+    which is only populated when we process the ``start`` event. So
+    ``play_opening`` MUST run after the start event, not before — otherwise
+    the opening audio is silently dropped (``_send_pcm`` returns early
+    when ``_stream_sid is None``).
+    """
 
     async def run(self) -> None:
-        """Override to interleave ``agent.play_opening`` after start()."""
-        # ``run`` reaches into private TwilioMediaBridge state but stays
-        # within the same module's contract — see the parent's run() for
-        # the canonical flow we're extending.
-        await self._agent.start()
-        await self._agent.play_opening(self._send_pcm)  # type: ignore[arg-type]
-        try:
-            await self._drive_inbound_loop()
-        finally:
-            await self._agent.handle_hangup()
-
-    async def _drive_inbound_loop(self) -> None:
         import json
 
-        while not self._stopped.is_set():
-            raw = await self._ws.receive_text()
-            msg = json.loads(raw)
-            event = msg.get("event")
-            if event == "connected":
-                continue
-            if event == "start":
-                self._stream_sid = (
-                    msg.get("start", {}).get("streamSid") or msg.get("streamSid")
-                )
-                log.info("twilio stream started", extra={"streamSid": self._stream_sid})
-            elif event == "media":
-                await self._on_media_frame(msg["media"])
-            elif event == "stop":
-                log.info("twilio stream stopped")
-                break
+        await self._agent.start()
+        opening_played = False
+        try:
+            while not self._stopped.is_set():
+                raw = await self._ws.receive_text()
+                msg = json.loads(raw)
+                event = msg.get("event")
+                if event == "connected":
+                    continue
+                if event == "start":
+                    self._stream_sid = (
+                        msg.get("start", {}).get("streamSid") or msg.get("streamSid")
+                    )
+                    log.info("twilio stream started", extra={"streamSid": self._stream_sid})
+                    # NOW we can play the opening — Twilio is ready to receive media.
+                    if not opening_played:
+                        opening_played = True
+                        await self._agent.play_opening(self._send_pcm)  # type: ignore[arg-type]
+                        log.info("agent opening played", extra={"streamSid": self._stream_sid})
+                elif event == "media":
+                    await self._on_media_frame(msg["media"])
+                elif event == "stop":
+                    log.info("twilio stream stopped")
+                    break
+        finally:
+            await self._agent.handle_hangup()

@@ -176,7 +176,12 @@ class TwilioMediaBridge:
     # --- outbound ------------------------------------------------------
 
     async def _send_pcm(self, pcm16: bytes) -> None:
-        """Sink callback for agent TTS audio. Converts to μ-law and frames out."""
+        """Sink callback for agent TTS audio. Converts to μ-law and frames out.
+
+        Frames are paced at real-time (20ms per 160-byte μ-law chunk @ 8kHz)
+        using a wall-clock deadline. Without pacing, Twilio buffers the full
+        utterance and plays it back at warp speed — the audio sounds garbled.
+        """
         if not pcm16 or self._stream_sid is None:
             return
         # Resample internal pcm -> 8k for Twilio.
@@ -187,8 +192,16 @@ class TwilioMediaBridge:
         else:
             pcm8k = pcm16
         mulaw = pcm16_to_mulaw(pcm8k)
-        # Send in ~20ms chunks (160 bytes @ 8kHz μ-law).
+
+        # 160 bytes of μ-law @ 8kHz mono = 20ms of audio. Pace each send to
+        # match that so playback runs at real-time. Use a wall-clock deadline
+        # (not ``sleep(0.02)`` per iteration) so we don't drift on slow sends.
+        import time as _time
+
         chunk = 160
+        frame_duration = 0.02  # seconds
+        sent = 0
+        start = _time.perf_counter()
         for i in range(0, len(mulaw), chunk):
             piece = mulaw[i : i + chunk]
             await self._ws.send_text(json.dumps({
@@ -196,6 +209,11 @@ class TwilioMediaBridge:
                 "streamSid": self._stream_sid,
                 "media": {"payload": base64.b64encode(piece).decode("ascii")},
             }))
+            sent += 1
+            target = start + sent * frame_duration
+            slack = target - _time.perf_counter()
+            if slack > 0:
+                await asyncio.sleep(slack)
 
 
 # --- TwiML -----------------------------------------------------------------

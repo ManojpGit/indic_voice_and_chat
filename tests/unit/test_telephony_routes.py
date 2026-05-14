@@ -36,9 +36,8 @@ def test_twilio_voice_returns_twiml_with_tenant_scoped_stream_url() -> None:
         assert resp.status_code == 200, resp.text
         body = resp.text
         assert "<Response>" in body
-        assert "/api/v1/telephony/twilio/stream" in body
-        # Tenant slug embedded so the WS handler can re-resolve.
-        assert "tenant=dev" in body
+        # Tenant slug embedded as path segment (Twilio strips query params).
+        assert "/api/v1/telephony/twilio/stream/dev" in body
     finally:
         set_tenant_resolver(None)
 
@@ -49,6 +48,47 @@ def test_twilio_voice_unknown_number_returns_404() -> None:
         app = _make_app()
         client = TestClient(app)
         resp = client.post("/telephony/twilio/voice", data={"To": "+919999999999"})
+        assert resp.status_code == 404
+    finally:
+        set_tenant_resolver(None)
+
+
+def test_twilio_voice_outbound_resolves_tenant_by_from() -> None:
+    """For ``Direction=outbound-api``, Twilio sets ``To`` to the end-user
+    destination (we don't own it) and ``From`` to our Twilio number.
+    The webhook must look up the tenant by ``From``, not ``To``."""
+    _register_dev_tenant_with_phone("+18888888888")
+    try:
+        app = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/telephony/twilio/voice",
+            data={
+                "To": "+14086605438",
+                "From": "+18888888888",
+                "Direction": "outbound-api",
+                "CallSid": "CAtest",
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        assert "/twilio/stream/dev" in resp.text
+    finally:
+        set_tenant_resolver(None)
+
+
+def test_twilio_voice_outbound_unknown_from_returns_404() -> None:
+    _register_dev_tenant_with_phone("+18888888888")
+    try:
+        app = _make_app()
+        client = TestClient(app)
+        resp = client.post(
+            "/telephony/twilio/voice",
+            data={
+                "To": "+14086605438",
+                "From": "+19999999999",
+                "Direction": "outbound-api",
+            },
+        )
         assert resp.status_code == 404
     finally:
         set_tenant_resolver(None)
@@ -71,7 +111,7 @@ def test_websocket_without_factory_closes() -> None:
     try:
         app = _make_app()
         client = TestClient(app)
-        with client.websocket_connect("/telephony/twilio/stream?tenant=dev") as ws:
+        with client.websocket_connect("/telephony/twilio/stream/dev") as ws:
             from starlette.websockets import WebSocketDisconnect
 
             with pytest.raises(WebSocketDisconnect):
@@ -80,12 +120,12 @@ def test_websocket_without_factory_closes() -> None:
         set_tenant_resolver(None)
 
 
-def test_websocket_missing_tenant_param_closes() -> None:
+def test_websocket_unknown_tenant_slug_closes() -> None:
     _register_dev_tenant_with_phone()
     try:
         app = _make_app()
         client = TestClient(app)
-        with client.websocket_connect("/telephony/twilio/stream") as ws:
+        with client.websocket_connect("/telephony/twilio/stream/ghost") as ws:
             from starlette.websockets import WebSocketDisconnect
             with pytest.raises(WebSocketDisconnect):
                 ws.receive_text()
@@ -94,7 +134,11 @@ def test_websocket_missing_tenant_param_closes() -> None:
 
 
 def test_websocket_drives_registered_bridge_with_tenant() -> None:
-    """Factory receives (websocket, tenant) and runs the bridge."""
+    """Factory receives (websocket, tenant) and runs the bridge.
+
+    Tenant slug arrives as a URL path segment because Twilio strips
+    query strings from <Stream url=...> attributes.
+    """
     _register_dev_tenant_with_phone()
     received: list[tuple[str, str]] = []
 
@@ -112,7 +156,7 @@ def test_websocket_drives_registered_bridge_with_tenant() -> None:
     try:
         app = _make_app()
         client = TestClient(app)
-        with client.websocket_connect("/telephony/twilio/stream?tenant=dev") as ws:
+        with client.websocket_connect("/telephony/twilio/stream/dev") as ws:
             ws.send_text("hello")
             assert ws.receive_text() == "ack:dev"
     finally:

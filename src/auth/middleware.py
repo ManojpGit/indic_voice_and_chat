@@ -174,6 +174,15 @@ async def tenant_from_ws_query(websocket: WebSocket) -> TenantContext:
     slug = websocket.query_params.get("tenant")
     if not slug:
         raise HTTPException(status_code=400, detail="missing 'tenant' query param")
+    return await tenant_from_slug(slug)
+
+
+async def tenant_from_slug(slug: str) -> TenantContext:
+    """Resolve a tenant by slug. Used by the Media Streams WS handler
+    which receives the slug as a URL path segment.
+    """
+    if _resolver is None:
+        raise HTTPException(status_code=503, detail="tenant resolver not initialized")
     tctx = await _resolver.resolve_by_slug(slug)
     if tctx is None:
         raise HTTPException(status_code=404, detail=f"unknown tenant slug {slug!r}")

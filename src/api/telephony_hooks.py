@@ -45,36 +45,57 @@ async def twilio_voice(
     To: str = Form(...),
     From: Optional[str] = Form(None),
     CallSid: Optional[str] = Form(None),
+    Direction: Optional[str] = Form(None),
 ) -> Response:
     """Twilio voice webhook → returns TwiML opening a tenant-aware media stream.
 
-    Tenant is resolved by looking up the Twilio number that was dialed in
-    ``tenant_phone_numbers``. The resolved slug is embedded in the WS URL
-    so the stream handler can re-resolve the same tenant on connect.
+    Tenant resolution is direction-aware:
+    - **inbound** (a customer dials our Twilio number): ``To`` is the
+      owned number; look it up in ``tenant_phone_numbers``.
+    - **outbound-api / outbound-dial** (we initiated the call via the
+      orchestrator or place_test_call.py): ``To`` is the dialed destination
+      (an end-user number we don't own); the tenant owns ``From`` instead.
+
+    The resolved slug is embedded in the WS URL so the stream handler can
+    re-resolve the same tenant on connect.
     """
-    tenant = await tenant_from_twilio_to_number(To)
+    is_outbound = (Direction or "").startswith("outbound")
+    lookup_number = From if (is_outbound and From) else To
+    tenant = await tenant_from_twilio_to_number(lookup_number)
 
     base = request.headers.get("x-forwarded-host") or request.url.netloc
     forwarded_proto = request.headers.get("x-forwarded-proto")
     scheme = "wss" if (forwarded_proto == "https" or request.url.scheme == "https") else "ws"
-    stream_url = f"{scheme}://{base}/api/v1/telephony/twilio/stream?tenant={tenant.slug}"
+    # Tenant slug goes in the URL **path** — Twilio strips query strings
+    # from <Stream url=...> attributes when opening the WSS connection.
+    stream_url = f"{scheme}://{base}/api/v1/telephony/twilio/stream/{tenant.slug}"
     body = voice_twiml(stream_url)
     log.info(
         "twilio voice webhook",
-        extra={"tenant": tenant.slug, "to": To, "from": From, "sid": CallSid},
+        extra={
+            "tenant": tenant.slug, "direction": Direction,
+            "to": To, "from": From, "sid": CallSid,
+        },
     )
     return Response(content=body, media_type="application/xml")
 
 
-@router.websocket("/twilio/stream")
-async def twilio_stream(websocket: WebSocket) -> None:
-    """Twilio Media Streams websocket → bridges audio to the tenant's agent."""
+@router.websocket("/twilio/stream/{tenant_slug}")
+async def twilio_stream(websocket: WebSocket, tenant_slug: str) -> None:
+    """Twilio Media Streams websocket → bridges audio to the tenant's agent.
+
+    Tenant slug arrives as a path segment because Twilio strips query
+    strings from ``<Stream url=...>`` attributes when establishing the
+    WSS connection.
+    """
+    from src.auth.middleware import tenant_from_slug
+
     await websocket.accept()
     try:
-        tenant = await tenant_from_ws_query(websocket)
+        tenant = await tenant_from_slug(tenant_slug)
     except HTTPException as e:
         log.warning("twilio stream tenant resolution failed: %s", e.detail)
-        await websocket.close(code=1008, reason=str(e.detail))
+        await websocket.close(code=1008 if e.status_code == 404 else 1011, reason=str(e.detail))
         return
 
     if _bridge_factory is None:

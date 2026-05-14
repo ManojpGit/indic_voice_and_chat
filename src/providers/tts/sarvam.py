@@ -81,17 +81,22 @@ class SarvamTTSAdapter(ITTSProvider):
             resp.raise_for_status()
             payload = resp.json()
 
-        # Sarvam returns: {"audios": ["<base64>", ...]}
+        # Sarvam returns: {"audios": ["<base64>", ...]} — each entry is a
+        # WAV-wrapped PCM blob (verified with bulbul:v2). Strip the WAV
+        # container so downstream consumers (TwilioMediaBridge._send_pcm)
+        # see raw 16-bit mono PCM at the requested sample rate; otherwise
+        # the 44-byte header gets decoded as audio samples and causes a
+        # noise burst at the start.
         audios = payload.get("audios") or []
         if not audios:
             raise RuntimeError(f"Sarvam TTS returned no audio: {payload}")
-        audio_bytes = base64.b64decode(audios[0])
-        # Approximate duration from PCM size (16-bit mono).
-        duration_ms = (len(audio_bytes) / max(config.sample_rate * 2, 1)) * 1000.0
+        raw = base64.b64decode(audios[0])
+        audio_bytes, sample_rate = _extract_pcm(raw, fallback_rate=config.sample_rate)
+        duration_ms = (len(audio_bytes) / max(sample_rate * 2, 1)) * 1000.0
         return TTSResult(
             audio=audio_bytes,
             duration_ms=duration_ms,
-            sample_rate=config.sample_rate,
+            sample_rate=sample_rate,
         )
 
     async def synthesize_stream(
@@ -107,3 +112,41 @@ class SarvamTTSAdapter(ITTSProvider):
 
     def get_available_voices(self, language: str) -> list[dict]:
         return list(LANGUAGE_VOICES.get(language, []))
+
+
+# --- helpers ---------------------------------------------------------------
+
+
+def _extract_pcm(blob: bytes, fallback_rate: int) -> tuple[bytes, int]:
+    """Return ``(raw_pcm16_mono, sample_rate)`` from a Sarvam audio blob.
+
+    If the blob is WAV-wrapped (``RIFF...WAVE``) — Sarvam's bulbul:v2 case —
+    parse the ``fmt `` chunk for the real sample rate, locate the ``data``
+    chunk, and return its payload. Otherwise return the blob as-is with the
+    caller-supplied fallback rate.
+    """
+    import struct
+
+    if len(blob) < 44 or blob[:4] != b"RIFF" or blob[8:12] != b"WAVE":
+        return blob, fallback_rate
+
+    # Walk the chunks (header is 12 bytes; then any number of ``<id><len><payload>``)
+    sample_rate = fallback_rate
+    pos = 12
+    pcm: bytes = b""
+    while pos + 8 <= len(blob):
+        chunk_id = blob[pos : pos + 4]
+        chunk_size = struct.unpack("<I", blob[pos + 4 : pos + 8])[0]
+        body_start = pos + 8
+        body_end = body_start + chunk_size
+        if chunk_id == b"fmt ":
+            sample_rate = struct.unpack("<I", blob[body_start + 4 : body_start + 8])[0]
+        elif chunk_id == b"data":
+            pcm = blob[body_start:body_end]
+            break
+        # WAV chunks are padded to even length.
+        pos = body_end + (chunk_size & 1)
+
+    if not pcm:
+        return blob, fallback_rate
+    return pcm, sample_rate
