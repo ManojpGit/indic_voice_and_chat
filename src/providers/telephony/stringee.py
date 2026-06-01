@@ -70,7 +70,13 @@ class StringeeAdapter(ITelephonyProvider):
         self._token_override: Optional[str] = config.get("access_token")
 
     def _make_access_token(self, ttl_seconds: int = 3600) -> str:
-        """Mint a Stringee access JWT signed with HS256 (api_key_secret)."""
+        """Mint a Stringee access JWT signed with HS256 (api_key_secret).
+
+        Stringee requires the JWT *header* to carry ``cty: stringee-api;v=1``
+        in addition to the standard ``alg``/``typ``. Without it the REST API
+        rejects the token with HTTP 403 ``{"r": 5, "message": "keySid
+        invalid"}`` even when the keySid and signature are correct.
+        """
         import jwt  # PyJWT — already pulled in transitively by Twilio SDK
 
         now = int(time.time())
@@ -80,7 +86,12 @@ class StringeeAdapter(ITelephonyProvider):
             "exp": now + ttl_seconds,
             "rest_api": True,
         }
-        return jwt.encode(payload, self._api_key_secret, algorithm="HS256")
+        return jwt.encode(
+            payload,
+            self._api_key_secret,
+            algorithm="HS256",
+            headers={"cty": "stringee-api;v=1"},
+        )
 
     def _headers(self) -> dict[str, str]:
         token = self._token_override or self._make_access_token()

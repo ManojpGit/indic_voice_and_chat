@@ -48,8 +48,8 @@ pipeline:
 
   telephony:
     provider: twilio
-    from_number: "+1XXXXXXXXXX" # override with your Twilio number
-    webhook_base_url: "https://CHANGE-ME.ngrok.app/api/v1/telephony"
+    from_number: "+15705255679" # override with your Twilio number
+    webhook_base_url: "https://disabled-wesley-pcs-activities.trycloudflare.com/api/v1/telephony"
     account_sid_env: TENANT_DEV_TWILIO_SID
     auth_token_env: TENANT_DEV_TWILIO_TOKEN
 
@@ -71,4 +71,4 @@ whatsapp:
 # The Twilio number(s) you own. Inbound voice webhooks resolve to this
 # tenant by matching the ``To`` form param against this list.
 phone_numbers:
-  - "+1XXXXXXXXXX"
+  - "+15705255679"

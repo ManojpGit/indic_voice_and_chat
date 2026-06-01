@@ -175,3 +175,16 @@ async def test_jwt_is_minted_when_no_token_override(adapter: StringeeAdapter) ->
     assert decoded["iss"] == "test-sid"
     assert decoded["rest_api"] is True
     assert "exp" in decoded and "jti" in decoded
+
+
+@pytest.mark.asyncio
+async def test_jwt_header_includes_stringee_cty(adapter: StringeeAdapter) -> None:
+    """Stringee's REST API requires the JWT header to carry
+    ``cty: stringee-api;v=1``. Without it the live API rejects the token with
+    HTTP 403 ``{"r": 5, "message": "keySid invalid"}`` even though the keySid
+    and signature are correct.
+    """
+    import jwt
+    token = adapter._make_access_token()
+    header = jwt.get_unverified_header(token)
+    assert header["cty"] == "stringee-api;v=1"
