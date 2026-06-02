@@ -69,3 +69,78 @@ class BrowserVoiceBridge:
         for i in range(0, len(pcm16), _SEND_CHUNK):
             await self._ws.send_bytes(pcm16[i : i + _SEND_CHUNK])
         await self._send_json({"type": "status", "status": "listening"})
+
+    # --- entrypoint ---------------------------------------------------
+
+    async def run(self) -> None:
+        """Drive the connection until the browser disconnects or the agent ends."""
+        await self._agent.start()
+        try:
+            # 1) Handshake: first text frame selects the tenant (already resolved
+            #    by the caller, so we just consume it). Then play the opening.
+            await self._read_hello()
+            await self._play_opening()
+
+            # 2) Turn loop.
+            while not self._stopped:
+                message = await self._ws.receive()
+                if message.get("type") == "websocket.disconnect":
+                    break
+                data = message.get("bytes")
+                if data is not None:
+                    await self._on_pcm_frame(data)
+                    continue
+                text = message.get("text")
+                if text is not None:
+                    # Forward-compat: ignore unknown control frames.
+                    continue
+        finally:
+            await self._agent.handle_hangup()
+
+    async def _read_hello(self) -> None:
+        message = await self._ws.receive()
+        # Tolerate a missing/early hello — tenant is already bound by the caller.
+        if message.get("text"):
+            try:
+                json.loads(message["text"])
+            except (ValueError, TypeError):
+                pass
+
+    async def _play_opening(self) -> None:
+        await self._send_json({"type": "status", "status": "opening"})
+        await self._agent.play_opening(self._send_pcm)
+        await self._emit_state()
+        await self._send_json({"type": "status", "status": "listening"})
+
+    # --- inbound ------------------------------------------------------
+
+    async def _on_pcm_frame(self, pcm16: bytes) -> None:
+        if accumulate_and_detect(pcm16, self._vad, self._endpoint, self._capture_buffer):
+            await self._dispatch_utterance()
+
+    async def _dispatch_utterance(self) -> None:
+        captured = bytes(self._capture_buffer)
+        self._capture_buffer.clear()
+        self._endpoint.reset()
+        await self._send_json({"type": "status", "status": "thinking"})
+        outcome = await self._agent.handle_turn(captured, self._send_pcm)
+
+        user_text = outcome.pipeline.user_text
+        if user_text:
+            await self._send_json({"type": "transcript", "role": "user", "text": user_text})
+        agent_text = outcome.response.response_text
+        if agent_text:
+            await self._send_json({"type": "transcript", "role": "agent", "text": agent_text})
+        await self._emit_state()
+
+        if getattr(self._agent.state, "is_terminal", False):
+            self._stopped = True
+            return
+        await self._send_json({"type": "status", "status": "listening"})
+
+    async def _emit_state(self) -> None:
+        await self._send_json({
+            "type": "state",
+            "state": self._agent.state.state.value,
+            "slots": dict(self._agent.slots.values),
+        })
