@@ -20,7 +20,9 @@ from src.providers.llm.groq import GroqLLMAdapter
 from src.providers.stt.groq_whisper import GroqSTTAdapter
 from src.providers.stt.sarvam import SarvamSTTAdapter
 from src.providers.telephony.exotel import ExotelAdapter
+from src.providers.telephony.infobip import InfobipAdapter
 from src.providers.telephony.stringee import StringeeAdapter
+from src.providers.telephony.telnyx import TelnyxAdapter
 from src.providers.telephony.twilio import TwilioAdapter
 from src.providers.tts.sarvam import SarvamTTSAdapter
 from src.providers.vector_store.faiss_store import FAISSAdapter
@@ -43,6 +45,8 @@ TELEPHONY_PROVIDERS: dict[str, type[ITelephonyProvider]] = {
     "twilio": TwilioAdapter,
     "exotel": ExotelAdapter,
     "stringee": StringeeAdapter,
+    "infobip": InfobipAdapter,
+    "telnyx": TelnyxAdapter,
 }
 
 VECTOR_STORE_PROVIDERS: dict[str, type[IVectorStore]] = {
