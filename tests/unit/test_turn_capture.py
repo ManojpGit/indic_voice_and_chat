@@ -6,11 +6,21 @@ from src.pipeline.vad import EnergyVAD, EndpointDetector, EndpointConfig
 
 def _loud(n_frames: int, vad: EnergyVAD) -> bytes:
     # Max-amplitude PCM16 => high RMS => is_speech True.
+    # frame_bytes is even (16-bit mono => 2 bytes/sample), so // 2 divides cleanly.
     return (b"\xff\x7f" * (vad.frame_bytes // 2)) * n_frames
 
 
 def _silent(n_frames: int, vad: EnergyVAD) -> bytes:
+    # frame_bytes is even (16-bit mono => 2 bytes/sample), so // 2 divides cleanly.
     return (b"\x00\x00" * (vad.frame_bytes // 2)) * n_frames
+
+
+def test_returns_false_while_speech_accumulating():
+    vad = EnergyVAD(sample_rate=16000, frame_ms=30)
+    endpoint = EndpointDetector(vad.frame_ms, EndpointConfig())
+    buf = bytearray()
+    # A single loud frame mid-utterance must not signal end-of-turn.
+    assert accumulate_and_detect(_loud(1, vad), vad, endpoint, buf) is False
 
 
 def test_accumulates_pcm_into_buffer():

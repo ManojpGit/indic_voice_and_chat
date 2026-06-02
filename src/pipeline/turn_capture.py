@@ -18,6 +18,9 @@ def accumulate_and_detect(
 ) -> bool:
     """Append a PCM16 frame to the capture buffer and run endpointing.
 
+    Mutates ``capture_buffer`` in place (appends ``pcm16`` bytes) — this is
+    the only side effect.
+
     Returns True once the endpoint detector reports end-of-utterance, i.e.
     the caller should dispatch the buffered audio as a completed turn.
     """
