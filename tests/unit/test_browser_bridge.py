@@ -92,12 +92,14 @@ class FakeAgent:
         self.opening_played = False
         self.hung_up = False
         self.turns: list[bytes] = []
+        self.session = type("Sess", (), {"turns": []})()
 
     async def start(self):
         self.started = True
 
     async def play_opening(self, sink):
         self.opening_played = True
+        self.session.turns.append(type("Msg", (), {"role": "assistant", "content": "Namaste! Main Priya."})())
         await sink(b"\x10\x11")  # fake opening audio
 
     async def handle_turn(self, captured: bytes, sink) -> TurnOutcome:
@@ -148,6 +150,7 @@ async def test_run_handshake_plays_opening_and_processes_a_turn():
     transcripts = [(e["role"], e["text"]) for e in events if e["type"] == "transcript"]
     assert ("user", "Namaste") in transcripts
     assert ("agent", "Theek hai") in transcripts
+    assert ("agent", "Namaste! Main Priya.") in transcripts
     states = [e for e in events if e["type"] == "state"]
     assert states and states[-1]["state"] == "qualifying"
     assert states[-1]["slots"] == {"interested": True}
@@ -198,3 +201,53 @@ async def test_terminal_agent_stops_run_loop():
     transcripts = [(e["role"], e["text"]) for e in events if e["type"] == "transcript"]
     assert ("user", "Namaste") in transcripts
     assert ("agent", "Theek hai") in transcripts
+
+
+# ---------------------------------------------------------------------------
+# FIX 1 — sub-frame chunk assembly regression tests
+# ---------------------------------------------------------------------------
+
+
+def _loud_bytes(n_frames, vad):
+    return (b"\xff\x7f" * (vad.frame_bytes // 2)) * n_frames
+
+
+def _silent_bytes(n_frames, vad):
+    return (b"\x00\x00" * (vad.frame_bytes // 2)) * n_frames
+
+
+def _chunk(blob, size=85):
+    return [blob[i:i + size] for i in range(0, len(blob), size)]
+
+
+@pytest.mark.asyncio
+async def test_subframe_chunks_are_assembled_then_endpointed():
+    vad = EnergyVAD(sample_rate=16000, frame_ms=30)
+    # 10 frames speech (300ms) + 21 frames silence (630ms > 600ms) => exactly one turn.
+    speech = _loud_bytes(10, vad)
+    silence = _silent_bytes(21, vad)
+    incoming = [{"type": "websocket.receive", "text": json.dumps({"type": "hello"})}]
+    for ch in _chunk(speech) + _chunk(silence):
+        incoming.append({"type": "websocket.receive", "bytes": ch})
+    ws = FakeWebSocket(incoming)
+    agent = FakeAgent()
+    bridge = BrowserVoiceBridge(websocket=ws, agent=agent, vad=vad, config=BrowserBridgeConfig())
+    await bridge.run()
+    assert len(agent.turns) == 1   # NOT fired 11x early; assembled correctly
+
+
+@pytest.mark.asyncio
+async def test_subframe_chunks_do_not_endpoint_too_early():
+    vad = EnergyVAD(sample_rate=16000, frame_ms=30)
+    # 10 frames speech (300ms) + only 10 frames silence (300ms < 600ms) => NO turn.
+    # Under the old per-message bug this would have fired (each tiny msg counted 30ms).
+    speech = _loud_bytes(10, vad)
+    silence = _silent_bytes(10, vad)
+    incoming = [{"type": "websocket.receive", "text": json.dumps({"type": "hello"})}]
+    for ch in _chunk(speech) + _chunk(silence):
+        incoming.append({"type": "websocket.receive", "bytes": ch})
+    ws = FakeWebSocket(incoming)
+    agent = FakeAgent()
+    bridge = BrowserVoiceBridge(websocket=ws, agent=agent, vad=vad, config=BrowserBridgeConfig())
+    await bridge.run()
+    assert len(agent.turns) == 0   # silence below threshold => no premature dispatch

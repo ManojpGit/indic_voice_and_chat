@@ -49,6 +49,11 @@ class BrowserVoiceBridge:
         self._vad = vad
         self._config = config or BrowserBridgeConfig()
         self._capture_buffer = bytearray()
+        # Browsers deliver tiny (~2.67 ms) audio quanta; assemble them into
+        # whole VAD frames (frame_ms of audio) before endpointing, so the
+        # EndpointDetector's per-frame timing is correct.
+        self._inbound = bytearray()
+        self._frame_bytes = int(self._config.pcm_sample_rate * vad.frame_ms / 1000) * 2
         self._endpoint = EndpointDetector(vad.frame_ms, self._config.endpoint)
         self._stopped = False
 
@@ -108,15 +113,37 @@ class BrowserVoiceBridge:
 
     async def _play_opening(self) -> None:
         await self._send_json({"type": "status", "status": "opening"})
+        session = getattr(self._agent, "session", None)
+        turns_before = len(session.turns) if session is not None else 0
         await self._agent.play_opening(self._send_pcm)
+        opening_text = self._latest_assistant_text(turns_before)
+        if opening_text:
+            await self._send_json({"type": "transcript", "role": "agent", "text": opening_text})
         await self._emit_state()
         await self._send_json({"type": "status", "status": "listening"})
+
+    def _latest_assistant_text(self, since: int) -> str:
+        """Return the assistant message appended since index ``since`` (the
+        rendered opening line), or '' if none / unavailable."""
+        session = getattr(self._agent, "session", None)
+        if session is None:
+            return ""
+        turns = getattr(session, "turns", [])
+        if len(turns) > since and getattr(turns[-1], "role", None) == "assistant":
+            return getattr(turns[-1], "content", "") or ""
+        return ""
 
     # --- inbound ------------------------------------------------------
 
     async def _on_pcm_frame(self, pcm16: bytes) -> None:
-        if accumulate_and_detect(pcm16, self._vad, self._endpoint, self._capture_buffer):
-            await self._dispatch_utterance()
+        # Accumulate raw bytes, then process exactly one VAD frame at a time so
+        # endpoint timing matches frame_ms regardless of the browser's quantum.
+        self._inbound.extend(pcm16)
+        while not self._stopped and len(self._inbound) >= self._frame_bytes:
+            frame = bytes(self._inbound[: self._frame_bytes])
+            del self._inbound[: self._frame_bytes]
+            if accumulate_and_detect(frame, self._vad, self._endpoint, self._capture_buffer):
+                await self._dispatch_utterance()
 
     async def _dispatch_utterance(self) -> None:
         captured = bytes(self._capture_buffer)

@@ -57,7 +57,7 @@ function addTranscript(role, text) {
   $("transcript").scrollTop = $("transcript").scrollHeight;
 }
 
-// Downsample Float32 @ctxRate -> Int16 @16k via linear interpolation.
+// Downsample Float32 @ctxRate -> Int16 @16k via nearest-neighbour sampling.
 function downsampleToInt16(float32, inRate) {
   if (inRate === TARGET_RATE) {
     const out = new Int16Array(float32.length);
@@ -103,7 +103,8 @@ registerProcessor('capture-processor', CaptureProcessor);
 `;
 
 async function start() {
-  ws = new WebSocket(`ws://${location.host}/api/v1/dev/voice?tenant=dev`);
+  const wsProto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${wsProto}://${location.host}/api/v1/dev/voice?tenant=dev`);
   ws.binaryType = "arraybuffer";
 
   ws.onopen = async () => {
@@ -156,6 +157,7 @@ async function start() {
   };
 
   ws.onclose = () => { stop(); setStatus("closed"); };
+  ws.onerror = () => { setStatus("connection error"); };
 }
 
 function stop() {
