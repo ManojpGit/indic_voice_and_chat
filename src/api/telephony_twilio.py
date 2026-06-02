@@ -38,6 +38,7 @@ from src.pipeline.audio_utils import (
     pcm16_to_mulaw,
     resample_pcm16,
 )
+from src.pipeline.turn_capture import accumulate_and_detect
 from src.pipeline.vad import (
     EndpointConfig,
     EndpointDetector,
@@ -142,9 +143,7 @@ class TwilioMediaBridge:
         else:
             pcm = pcm8k
 
-        self._capture_buffer.extend(pcm)
-
-        # VAD on this chunk.
+        # VAD on this chunk (for the idle-silence timer) + shared capture core.
         frame = self._vad.detect(pcm)
         if frame.is_speech:
             self._idle_silence_ms = 0
@@ -153,12 +152,14 @@ class TwilioMediaBridge:
 
         # Extended silence -> hang up gracefully.
         if self._idle_silence_ms >= self._config.max_idle_silence_s * 1000:
+            self._capture_buffer.extend(pcm)
             await self._agent.handle_extended_silence()
             self._stopped.set()
             return
 
-        # Endpoint reached -> dispatch the buffered utterance to the agent.
-        if self._endpoint.feed(frame):
+        # Accumulate + endpoint via the shared helper. Re-run detect inside the
+        # helper is cheap and keeps a single capture path across transports.
+        if accumulate_and_detect(pcm, self._vad, self._endpoint, self._capture_buffer):
             await self._dispatch_utterance()
 
     async def _dispatch_utterance(self) -> None:
