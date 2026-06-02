@@ -44,6 +44,7 @@ from src.bootstrap import (
 )
 from src.config import Settings, get_settings
 from src.config_tenant import TenantSettings, discover_tenant_slugs, load_tenant
+from src.dialogue.campaign_loader import active_campaign_slug, load_campaign
 from src.dialogue.context import SessionStore
 from src.models.database import dispose_engine, get_engine, get_sessionmaker
 from src.utils.logging import configure_logging, get_logger
@@ -103,14 +104,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     base_session_store = SessionStore(
         redis=redis_client, ttl_seconds=settings.redis.session_ttl_seconds
     )
+    campaign = load_campaign(active_campaign_slug())
+    log.info(
+        "campaign loaded",
+        extra={"slug": active_campaign_slug(), "agent": campaign.script.agent_name,
+               "slots": list(campaign.slots.specs.keys())},
+    )
     telephony_hooks.set_bridge_factory(
-        make_bridge_factory(providers=providers, session_store=base_session_store)
+        make_bridge_factory(
+            providers=providers, session_store=base_session_store,
+            script=campaign.script, slots=campaign.slots,
+        )
     )
     telephony_hooks.set_exotel_bridge_factory(
-        make_exotel_bridge_factory(providers=providers, session_store=base_session_store)
+        make_exotel_bridge_factory(
+            providers=providers, session_store=base_session_store,
+            script=campaign.script, slots=campaign.slots,
+        )
     )
     if dev_console_enabled():
-        set_browser_bridge_factory(make_browser_bridge_factory(providers=providers))
+        set_browser_bridge_factory(
+            make_browser_bridge_factory(
+                providers=providers, script=campaign.script, slots=campaign.slots,
+            )
+        )
         log.info("dev console enabled at /dev/voice")
     app.state.providers = providers
 
