@@ -81,6 +81,50 @@ async def test_transcribe_stream_yields_single_buffered_result(adapter: GroqSTTA
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_transcribe_wraps_raw_pcm_in_wav(adapter: GroqSTTAdapter) -> None:
+    """Live bridge sends headerless PCM16; Groq needs a real WAV container.
+
+    Regression: raw PCM mislabelled ``audio.wav`` made Whisper return
+    ``400 could not process file``.
+    """
+    route = respx.post(f"{GROQ_BASE_URL}/audio/transcriptions").mock(
+        return_value=Response(200, json={"text": "ok", "language": "hi"})
+    )
+    raw_pcm = b"\x01\x00\x02\x00\x03\x00\x04\x00"  # no RIFF/WAVE header
+    await adapter.transcribe(raw_pcm, STTConfig(sample_rate=16000))
+
+    body = route.calls.last.request.content
+    # The multipart file part must now carry a valid WAV container: a RIFF
+    # header, the WAVE/fmt /data chunks, then the original PCM as the payload.
+    assert b"RIFF" in body and b"WAVE" in body and b"data" in body
+    riff = body.index(b"RIFF")
+    assert body.index(raw_pcm) > riff  # PCM sits inside the container, after the header
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_transcribe_passes_through_existing_wav(adapter: GroqSTTAdapter) -> None:
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * 8)
+    existing = buf.getvalue()
+
+    route = respx.post(f"{GROQ_BASE_URL}/audio/transcriptions").mock(
+        return_value=Response(200, json={"text": "ok", "language": "hi"})
+    )
+    await adapter.transcribe(existing, STTConfig())
+    # A pre-framed WAV is forwarded unchanged (no double-wrapping).
+    assert existing in route.calls.last.request.content
+
+
+@pytest.mark.asyncio
 async def test_constructor_requires_api_key(monkeypatch) -> None:
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     with pytest.raises(ValueError):

@@ -14,7 +14,9 @@ Sarvam adapter.
 
 from __future__ import annotations
 
+import io
 import os
+import wave
 from typing import Any, AsyncIterator, Optional
 
 import httpx
@@ -49,7 +51,12 @@ class GroqSTTAdapter(ISTTProvider):
         return {"Authorization": f"Bearer {self._api_key}"}
 
     async def transcribe(self, audio: bytes, config: STTConfig) -> STTResult:
-        files = {"file": ("audio.wav", audio, "audio/wav")}
+        # The live telephony bridge hands us raw, headerless PCM16 (mono, at
+        # ``config.sample_rate``). Groq/Whisper needs a parseable container, so
+        # wrap bare PCM in a WAV header. Audio that already carries a RIFF/WAVE
+        # header (or other encoded formats) is passed through untouched.
+        wav = _ensure_wav(audio, config.sample_rate)
+        files = {"file": ("audio.wav", wav, "audio/wav")}
         data: dict[str, str] = {
             "model": config.model or self._model,
             "response_format": "verbose_json",
@@ -86,6 +93,24 @@ class GroqSTTAdapter(ISTTProvider):
 
     def get_supported_languages(self) -> list[str]:
         return list(SUPPORTED_LANGUAGES)
+
+
+def _ensure_wav(audio: bytes, sample_rate: int) -> bytes:
+    """Return ``audio`` as a WAV-framed byte string.
+
+    Bytes that already begin with a ``RIFF....WAVE`` header are returned
+    unchanged. Anything else is treated as raw little-endian PCM16 mono and
+    wrapped in a minimal WAV container at ``sample_rate``.
+    """
+    if len(audio) >= 12 and audio[:4] == b"RIFF" and audio[8:12] == b"WAVE":
+        return audio
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)  # PCM16
+        wav.setframerate(sample_rate)
+        wav.writeframes(audio)
+    return buf.getvalue()
 
 
 def _parse_response(payload: dict[str, Any]) -> STTResult:
