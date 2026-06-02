@@ -1,0 +1,174 @@
+<!-- static/dev_console.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voice Dev Console</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; background:#0f172a; color:#e2e8f0; }
+  h1 { font-size: 1.2rem; }
+  .row { display:flex; gap:1rem; align-items:center; margin-bottom:1rem; flex-wrap:wrap; }
+  button { padding:.5rem 1rem; border-radius:.4rem; border:0; cursor:pointer; font-weight:600; }
+  #start { background:#22c55e; color:#06210f; }
+  #start.stop { background:#ef4444; color:#2a0606; }
+  #status { font-weight:600; }
+  .panes { display:flex; gap:1rem; flex-wrap:wrap; }
+  .pane { flex:1 1 320px; background:#1e293b; border-radius:.5rem; padding:.75rem; min-height:240px; }
+  .pane h2 { font-size:.9rem; margin:.2rem 0 .6rem; color:#94a3b8; }
+  .turn { margin:.3rem 0; }
+  .turn.user { color:#7dd3fc; }
+  .turn.agent { color:#86efac; }
+  pre { white-space:pre-wrap; word-break:break-word; margin:0; font-size:.85rem; }
+  .hint { color:#94a3b8; font-size:.8rem; }
+  label { font-size:.85rem; }
+</style>
+</head>
+<body>
+  <h1>Voice Dev Console <span class="hint">— use headphones to avoid echo</span></h1>
+  <div class="row">
+    <button id="start">Start</button>
+    <label><input type="checkbox" id="halfDuplex" checked /> Mute mic while agent speaks</label>
+    <span id="status">idle</span>
+  </div>
+  <div class="panes">
+    <div class="pane">
+      <h2>Transcript</h2>
+      <div id="transcript"></div>
+    </div>
+    <div class="pane">
+      <h2>Dialogue state &amp; slots</h2>
+      <pre id="state">—</pre>
+    </div>
+  </div>
+
+<script>
+const TARGET_RATE = 16000;
+let ws, audioCtx, micStream, workletNode, playCursor = 0, agentSpeaking = false, running = false;
+
+const $ = (id) => document.getElementById(id);
+const setStatus = (s) => { $("status").textContent = s; };
+
+function addTranscript(role, text) {
+  const div = document.createElement("div");
+  div.className = "turn " + role;
+  div.textContent = (role === "user" ? "🧑 " : "🤖 ") + text;
+  $("transcript").appendChild(div);
+  $("transcript").scrollTop = $("transcript").scrollHeight;
+}
+
+// Downsample Float32 @ctxRate -> Int16 @16k via linear interpolation.
+function downsampleToInt16(float32, inRate) {
+  if (inRate === TARGET_RATE) {
+    const out = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32[i]));
+      out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return out;
+  }
+  const ratio = inRate / TARGET_RATE;
+  const outLen = Math.floor(float32.length / ratio);
+  const out = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const s = Math.max(-1, Math.min(1, float32[Math.floor(i * ratio)]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
+}
+
+// Schedule Int16 PCM @16k for gapless playback.
+function playPcm16(int16) {
+  const buf = audioCtx.createBuffer(1, int16.length, TARGET_RATE);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 0x8000;
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+  const now = audioCtx.currentTime;
+  if (playCursor < now) playCursor = now;
+  src.start(playCursor);
+  playCursor += buf.duration;
+}
+
+const WORKLET_CODE = `
+class CaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input[0]) this.port.postMessage(input[0].slice(0));
+    return true;
+  }
+}
+registerProcessor('capture-processor', CaptureProcessor);
+`;
+
+async function start() {
+  ws = new WebSocket(`ws://${location.host}/api/v1/dev/voice?tenant=dev`);
+  ws.binaryType = "arraybuffer";
+
+  ws.onopen = async () => {
+    ws.send(JSON.stringify({ type: "hello", tenant: "dev" }));
+    audioCtx = new AudioContext();
+    playCursor = audioCtx.currentTime;
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+    });
+    const blobUrl = URL.createObjectURL(new Blob([WORKLET_CODE], { type: "application/javascript" }));
+    await audioCtx.audioWorklet.addModule(blobUrl);
+    const srcNode = audioCtx.createMediaStreamSource(micStream);
+    workletNode = new AudioWorkletNode(audioCtx, "capture-processor");
+    workletNode.port.onmessage = (e) => {
+      if (!running) return;
+      if ($("halfDuplex").checked && agentSpeaking) return;  // half-duplex gate
+      const int16 = downsampleToInt16(e.data, audioCtx.sampleRate);
+      if (ws.readyState === WebSocket.OPEN) ws.send(int16.buffer);
+    };
+    srcNode.connect(workletNode);
+    // Worklet needs a sink to pull; route through a muted gain so we don't echo.
+    const sink = audioCtx.createGain();
+    sink.gain.value = 0;
+    workletNode.connect(sink).connect(audioCtx.destination);
+    running = true;
+    setStatus("connected");
+  };
+
+  ws.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) {
+      playPcm16(new Int16Array(e.data));
+      return;
+    }
+    const msg = JSON.parse(e.data);
+    if (msg.type === "status") {
+      setStatus(msg.status);
+      if (msg.status === "speaking") agentSpeaking = true;
+      if (msg.status === "listening") agentSpeaking = false;
+    } else if (msg.type === "transcript") {
+      addTranscript(msg.role, msg.text);
+    } else if (msg.type === "state") {
+      $("state").textContent =
+        "state: " + msg.state + "\nslots: " + JSON.stringify(msg.slots, null, 2);
+    }
+  };
+
+  ws.onclose = () => { stop(); setStatus("closed"); };
+}
+
+function stop() {
+  running = false;
+  if (workletNode) { try { workletNode.disconnect(); } catch (_) {} }
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+  $("start").classList.remove("stop");
+  $("start").textContent = "Start";
+}
+
+$("start").onclick = () => {
+  if (running) { stop(); return; }
+  $("start").classList.add("stop");
+  $("start").textContent = "Stop";
+  start();
+};
+</script>
+</body>
+</html>
