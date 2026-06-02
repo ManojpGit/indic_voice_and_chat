@@ -25,6 +25,13 @@ from sqlalchemy import text
 
 from src.api import api_router
 from src.api import telephony_hooks
+from src.api.dev_console import (
+    dev_console_enabled,
+    dev_router,
+    ws_router as dev_ws_router,
+    make_browser_bridge_factory,
+    set_browser_bridge_factory,
+)
 from src.auth.middleware import (
     InMemoryTenantResolver,
     set_admin_tokens,
@@ -102,6 +109,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     telephony_hooks.set_exotel_bridge_factory(
         make_exotel_bridge_factory(providers=providers, session_store=base_session_store)
     )
+    if dev_console_enabled():
+        set_browser_bridge_factory(make_browser_bridge_factory(providers=providers))
+        log.info("dev console enabled at /dev/voice")
     app.state.providers = providers
 
     try:
@@ -110,6 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("shutdown")
         telephony_hooks.set_bridge_factory(None)
         telephony_hooks.set_exotel_bridge_factory(None)
+        set_browser_bridge_factory(None)
         await redis_client.aclose()
         await dispose_engine()
         set_tenant_resolver(None)
@@ -122,7 +133,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+if dev_console_enabled():
+    api_router.include_router(dev_ws_router)    # WS  /api/v1/dev/voice
+
 app.include_router(api_router)
+
+if dev_console_enabled():
+    app.include_router(dev_router)              # GET /dev/voice
 
 
 @app.get("/health")
