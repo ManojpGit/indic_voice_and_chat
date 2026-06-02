@@ -120,3 +120,26 @@ def test_from_campaign_yaml_backcompat_existing_keys() -> None:
     })
     assert s.agent_name == "P" and s.closing == {"positive": "ok"}
     assert s.knowledge == {} and s.max_turns == 0 and s.dos == []
+
+
+def test_voicebot_prompt_is_generic_over_script() -> None:
+    """The builder must embed whatever the script declares — no hardcoded
+    campaign content. Uses sentinel strings (not Bharat Matka)."""
+    script = VoiceBotScript.from_campaign_yaml({
+        "agent_name": "Zeta", "agent_role": "Helper", "company_name": "Foo Inc",
+        "objective": "SENTINEL_OBJECTIVE_X",
+        "knowledge": {"q1": "SENTINEL_KNOWLEDGE_Y"},
+        "dos": ["SENTINEL_DO_Z"],
+        "donts": ["SENTINEL_DONT_W"],
+        "personality": "SENTINEL_PERSONA",
+        "max_turns": 7,
+    })
+    prompt = build_voicebot_system_prompt(script, SlotSchema())
+    for sentinel in ("SENTINEL_OBJECTIVE_X", "SENTINEL_KNOWLEDGE_Y",
+                     "SENTINEL_DO_Z", "SENTINEL_DONT_W", "SENTINEL_PERSONA"):
+        assert sentinel in prompt
+    # Fixed customer-led policy text is present regardless of campaign.
+    assert "LISTEN FIRST" in prompt
+    assert "REDIRECT ONLY WHEN" in prompt
+    # Soft turn budget surfaced from the script's max_turns.
+    assert "7 turns" in prompt

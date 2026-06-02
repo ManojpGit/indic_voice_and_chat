@@ -134,41 +134,84 @@ def build_voicebot_system_prompt(
     lead_data: Optional[dict[str, Any]] = None,
     extra_directives: Optional[list[str]] = None,
 ) -> str:
-    """Assemble the full system prompt for VoiceBotAgent."""
+    """Assemble the VoiceBotAgent system prompt.
+
+    Campaign-agnostic: this builder only embeds what ``script`` and ``schema``
+    declare. The customer-led policy is fixed (applies to every campaign);
+    all campaign-specific content comes from the script fields.
+    """
     lead_data = lead_data or {}
     parts: list[str] = []
 
+    # Identity + persona.
     parts.append(
         f"You are {script.agent_name}, a {script.agent_role} at {script.company_name}. "
         f"You are on a phone call with a lead. Speak naturally as a human would on a call."
     )
+    if script.personality:
+        parts.append(f"Your personality: {script.personality}.")
+    if script.conversation_style:
+        parts.append(f"Conversation style: {script.conversation_style}.")
 
+    # Language policy.
     parts.append(
         f"Default language: {script.language_default}. Mirror the user's language and "
         "match their level of formality. Code-switch (Hindi/English mixing) is fine "
         "if the user does it."
     )
 
+    # Customer-led behavior (fixed policy, generic over every campaign).
+    parts.append(
+        "How to handle every turn — this is your core behavior:\n"
+        "1. LISTEN FIRST. Work out what the customer actually said, then answer THAT "
+        "directly and helpfully before anything else. Draw on the knowledge below, in "
+        "your own warm words — never recite.\n"
+        "2. THEN gently move toward your objective. The talking points are material to "
+        "draw on, not a checklist to read out.\n"
+        "3. REDIRECT ONLY WHEN the customer's input is totally unrelated to this call "
+        "(e.g. weather, wrong number, personal chit-chat): briefly and warmly acknowledge, "
+        "then steer back. If their question is on-topic or a concern, answer it — never deflect.\n"
+        "4. Follow the do's and don'ts below for tone."
+    )
+
+    if script.objective:
+        parts.append("Your objective on this call:\n" + script.objective.strip())
+
     if script.opening:
-        parts.append("Opening line:\n" + script.opening.strip())
+        parts.append("Opening line (already spoken at the start of the call):\n" + script.opening.strip())
 
     if script.talking_points:
         bullets = "\n".join(f"- {p}" for p in script.talking_points)
-        parts.append("Talking points:\n" + bullets)
+        parts.append("Talking points (material, not a checklist):\n" + bullets)
 
     if script.qualifying_questions:
         bullets = "\n".join(f"- {q}" for q in script.qualifying_questions)
         parts.append("Qualifying questions to ask when natural:\n" + bullets)
 
-    if script.objection_responses:
-        bullets = "\n".join(
-            f"- {tag}: {resp}" for tag, resp in script.objection_responses.items()
+    # Merge the campaign's knowledge base and objection responses into one
+    # reference set the agent uses to answer questions/concerns.
+    knowledge_items = {**(script.knowledge or {}), **(script.objection_responses or {})}
+    if knowledge_items:
+        bullets = "\n".join(f"- {tag}: {resp}" for tag, resp in knowledge_items.items())
+        parts.append(
+            "Knowledge for answering the customer's questions and concerns (use the "
+            "substance in your own words, not verbatim):\n" + bullets
         )
-        parts.append("Objection responses (use the tone, not verbatim):\n" + bullets)
 
     if script.closing:
         bullets = "\n".join(f"- {tag}: {resp}" for tag, resp in script.closing.items())
         parts.append("Closing lines:\n" + bullets)
+
+    if script.dos:
+        parts.append("Do:\n" + "\n".join(f"- {d}" for d in script.dos))
+    if script.donts:
+        parts.append("Don't:\n" + "\n".join(f"- {d}" for d in script.donts))
+
+    if script.max_turns and script.max_turns > 0:
+        parts.append(
+            f"You have roughly {script.max_turns} turns. If the customer clearly is not "
+            "engaging after a few honest attempts, close gracefully rather than pushing."
+        )
 
     if schema.specs:
         slot_lines = []
@@ -197,7 +240,7 @@ def build_voicebot_system_prompt(
         "Rules:\n"
         "- Keep `response_text` concise (1-2 sentences) — this is voice, not chat.\n"
         "- Never invent facts about the company or its products.\n"
-        "- If the user asks if you are AI, answer honestly using the `is_ai` objection response.\n"
+        "- If the user asks if you are AI, answer honestly.\n"
         "- If the user asks to be removed, set action=close_negative and acknowledge.\n"
         "- Set action=end only when the conversation is genuinely over."
     )
