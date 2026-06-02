@@ -115,6 +115,7 @@ def make_bridge_factory(
     session_store: SessionStore | None = None,
     bridge_config: TwilioBridgeConfig | None = None,
     script: VoiceBotScript = DEFAULT_DEMO_SCRIPT,
+    slots: SlotSchema = SlotSchema(),
 ) -> Callable[[WebSocket, TenantContext], TwilioMediaBridge]:
     """Return a callable suitable for ``set_bridge_factory(...)``.
 
@@ -166,7 +167,7 @@ def make_bridge_factory(
         agent = VoiceBotAgent(
             session=session,
             state_machine=sm,
-            slot_schema=SlotSchema(),
+            slot_schema=slots,
             script=script,
             engine=engine,
             store=store,
@@ -237,6 +238,7 @@ def make_exotel_bridge_factory(
     session_store: SessionStore | None = None,
     bridge_config: ExotelBridgeConfig | None = None,
     script: VoiceBotScript = DEFAULT_DEMO_SCRIPT,
+    slots: SlotSchema = SlotSchema(),
 ) -> Callable[[WebSocket, TenantContext], ExotelMediaBridge]:
     """Build an Exotel WS bridge per call, wired to the tenant's provider stack.
 
@@ -283,7 +285,7 @@ def make_exotel_bridge_factory(
         agent = VoiceBotAgent(
             session=session,
             state_machine=sm,
-            slot_schema=SlotSchema(),
+            slot_schema=slots,
             script=script,
             engine=engine,
             store=store,

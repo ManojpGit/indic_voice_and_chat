@@ -93,6 +93,7 @@ async def dev_voice_ws(websocket: WebSocket) -> None:
 def make_browser_bridge_factory(
     providers: TenantProviders,
     script: VoiceBotScript = DEFAULT_DEMO_SCRIPT,
+    slots: SlotSchema = SlotSchema(),
 ) -> BrowserBridgeFactory:
     """Build a BrowserVoiceBridge per connection, wired to the tenant stack.
 
@@ -123,7 +124,7 @@ def make_browser_bridge_factory(
         agent = VoiceBotAgent(
             session=AgentSession(session_id=session_id),
             state_machine=AgentStateMachine(),
-            slot_schema=SlotSchema(),
+            slot_schema=slots,
             script=script,
             engine=engine,
             store=None,
