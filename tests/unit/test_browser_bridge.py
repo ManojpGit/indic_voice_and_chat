@@ -151,3 +151,50 @@ async def test_run_handshake_plays_opening_and_processes_a_turn():
     states = [e for e in events if e["type"] == "state"]
     assert states and states[-1]["state"] == "qualifying"
     assert states[-1]["slots"] == {"interested": True}
+
+
+# ---------------------------------------------------------------------------
+# Task 3 (cont.) — terminal-agent path: _dispatch_utterance stops the loop
+# ---------------------------------------------------------------------------
+
+
+class TerminalFakeAgent(FakeAgent):
+    """FakeAgent variant whose handle_turn marks the agent as terminal."""
+
+    async def handle_turn(self, captured: bytes, sink) -> TurnOutcome:
+        outcome = await super().handle_turn(captured, sink)
+        self.state.is_terminal = True
+        return outcome
+
+
+@pytest.mark.asyncio
+async def test_terminal_agent_stops_run_loop():
+    """When agent.state.is_terminal is True after handle_turn, the bridge sets
+    _stopped=True, skips the trailing status:listening, and exits cleanly."""
+    vad = EnergyVAD(sample_rate=16000, frame_ms=30)
+    # hello + 10 loud frames (speech) + 25 silent frames (endpoint) => one turn.
+    incoming = [{"type": "websocket.receive", "text": json.dumps({"type": "hello", "tenant": "dev"})}]
+    for _ in range(10):
+        incoming.append({"type": "websocket.receive", "bytes": _loud_frame(vad)})
+    for _ in range(25):
+        incoming.append({"type": "websocket.receive", "bytes": _silent_frame(vad)})
+    ws = FakeWebSocket(incoming)
+    agent = TerminalFakeAgent()
+    bridge = BrowserVoiceBridge(websocket=ws, agent=agent, vad=vad, config=BrowserBridgeConfig())
+
+    await bridge.run()
+
+    # Bridge must have exited the loop via the terminal path.
+    assert bridge._stopped is True
+
+    # The finally block in run() must still have fired.
+    assert agent.hung_up is True
+
+    # One turn was captured and dispatched.
+    assert len(agent.turns) == 1 and len(agent.turns[0]) > 0
+
+    # Transcripts for both user and agent were still emitted.
+    events = [json.loads(t) for t in ws.sent_text]
+    transcripts = [(e["role"], e["text"]) for e in events if e["type"] == "transcript"]
+    assert ("user", "Namaste") in transcripts
+    assert ("agent", "Theek hai") in transcripts
