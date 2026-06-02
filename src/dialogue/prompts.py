@@ -81,19 +81,50 @@ class VoiceBotScript:
     qualifying_questions: list[str] = field(default_factory=list)
     objection_responses: dict[str, str] = field(default_factory=dict)
     closing: dict[str, str] = field(default_factory=dict)
+    # Richer, optional campaign fields. All default empty so existing callers
+    # and DEFAULT_DEMO_SCRIPT are unaffected. The prompt builder consumes
+    # whatever these contain — no campaign-specific assumptions live in code.
+    personality: str = ""
+    gender: str = ""
+    objective: str = ""
+    knowledge: dict[str, str] = field(default_factory=dict)
+    dos: list[str] = field(default_factory=list)
+    donts: list[str] = field(default_factory=list)
+    conversation_style: str = ""
+    max_turns: int = 0
 
     @classmethod
     def from_campaign_yaml(cls, script: dict[str, Any]) -> "VoiceBotScript":
+        def pick(*keys: str, default: str = "") -> str:
+            for k in keys:
+                if script.get(k) is not None:
+                    return script[k]
+            return default
+
+        closing_raw = script.get("closing")
+        if isinstance(closing_raw, str):
+            closing = {"default": closing_raw}
+        else:
+            closing = dict(closing_raw or {})
+
         return cls(
-            agent_name=script.get("agent_name", "Agent"),
-            agent_role=script.get("agent_role", "Customer Engagement"),
-            company_name=script.get("company_name", "[Company]"),
-            language_default=script.get("language_default", "hi"),
-            opening=script.get("opening", ""),
+            agent_name=pick("agent_name", "name", default="Agent"),
+            agent_role=pick("agent_role", "role", default="Customer Engagement"),
+            company_name=pick("company_name", "company", default="[Company]"),
+            language_default=pick("language_default", "language", default="hi"),
+            opening=pick("opening", "greeting", default=""),
             talking_points=list(script.get("talking_points") or []),
             qualifying_questions=list(script.get("qualifying_questions") or []),
             objection_responses=dict(script.get("objection_responses") or {}),
-            closing=dict(script.get("closing") or {}),
+            closing=closing,
+            personality=script.get("personality", "") or "",
+            gender=script.get("gender", "") or "",
+            objective=script.get("objective", "") or "",
+            knowledge=dict(script.get("knowledge") or {}),
+            dos=list(script.get("dos") or []),
+            donts=list(script.get("donts") or []),
+            conversation_style=script.get("conversation_style", "") or "",
+            max_turns=int(script.get("max_turns") or 0),
         )
 
 

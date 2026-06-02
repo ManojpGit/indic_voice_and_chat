@@ -88,3 +88,35 @@ def test_response_schemas_are_valid_json() -> None:
     # Smoke test — assert they're JSON-serializable
     json.dumps(VOICEBOT_RESPONSE_SCHEMA)
     json.dumps(CHATBOT_RESPONSE_SCHEMA)
+
+
+def test_from_campaign_yaml_parses_new_fields_and_aliases() -> None:
+    s = VoiceBotScript.from_campaign_yaml({
+        "name": "Anaaya", "company": "Bharat Matka", "role": "Sales",
+        "language": "hi", "greeting": "Namaste",
+        "objective": "Push link", "knowledge": {"safety": "It is safe"},
+        "dos": ["Be warm"], "donts": ["No jargon"],
+        "personality": "warm", "gender": "female",
+        "conversation_style": "Hinglish", "max_turns": 12,
+        "closing": "Dhanyavaad!",   # a string, not a dict
+    })
+    assert s.agent_name == "Anaaya"
+    assert s.company_name == "Bharat Matka"
+    assert s.agent_role == "Sales"
+    assert s.language_default == "hi"
+    assert s.opening == "Namaste"
+    assert s.objective == "Push link"
+    assert s.knowledge == {"safety": "It is safe"}
+    assert s.dos == ["Be warm"] and s.donts == ["No jargon"]
+    assert s.personality == "warm" and s.gender == "female"
+    assert s.conversation_style == "Hinglish" and s.max_turns == 12
+    assert s.closing == {"default": "Dhanyavaad!"}   # string normalized to dict
+
+
+def test_from_campaign_yaml_backcompat_existing_keys() -> None:
+    s = VoiceBotScript.from_campaign_yaml({
+        "agent_name": "P", "agent_role": "R", "company_name": "C",
+        "closing": {"positive": "ok"},
+    })
+    assert s.agent_name == "P" and s.closing == {"positive": "ok"}
+    assert s.knowledge == {} and s.max_turns == 0 and s.dos == []
