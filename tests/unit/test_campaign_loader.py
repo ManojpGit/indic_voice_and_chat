@@ -53,3 +53,17 @@ def test_active_campaign_slug_default_and_env(monkeypatch) -> None:
     assert active_campaign_slug() == "bharat_matka"
     monkeypatch.setenv("VOX_CAMPAIGN", "foo")
     assert active_campaign_slug() == "foo"
+
+
+def test_bharat_matka_campaign_loads_from_default_dir() -> None:
+    # Uses the real config/campaigns/bharat_matka.yaml (default dir).
+    lc = load_campaign("bharat_matka")
+    assert lc.script.agent_name == "Anaaya"
+    assert lc.script.company_name == "Bharat Matka"
+    assert lc.script.gender == "female"
+    assert lc.script.knowledge  # non-empty knowledge base
+    assert lc.script.dos and lc.script.donts
+    assert lc.script.max_turns == 12
+    # Declared slots are present (campaign-driven; names are sample data).
+    assert lc.slots.specs
+    assert "interest_level" in lc.slots.specs
