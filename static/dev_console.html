@@ -108,28 +108,33 @@ async function start() {
 
   ws.onopen = async () => {
     ws.send(JSON.stringify({ type: "hello", tenant: "dev" }));
-    audioCtx = new AudioContext();
-    playCursor = audioCtx.currentTime;
-    micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
-    });
-    const blobUrl = URL.createObjectURL(new Blob([WORKLET_CODE], { type: "application/javascript" }));
-    await audioCtx.audioWorklet.addModule(blobUrl);
-    const srcNode = audioCtx.createMediaStreamSource(micStream);
-    workletNode = new AudioWorkletNode(audioCtx, "capture-processor");
-    workletNode.port.onmessage = (e) => {
-      if (!running) return;
-      if ($("halfDuplex").checked && agentSpeaking) return;  // half-duplex gate
-      const int16 = downsampleToInt16(e.data, audioCtx.sampleRate);
-      if (ws.readyState === WebSocket.OPEN) ws.send(int16.buffer);
-    };
-    srcNode.connect(workletNode);
-    // Worklet needs a sink to pull; route through a muted gain so we don't echo.
-    const sink = audioCtx.createGain();
-    sink.gain.value = 0;
-    workletNode.connect(sink).connect(audioCtx.destination);
-    running = true;
-    setStatus("connected");
+    try {
+      audioCtx = new AudioContext();
+      playCursor = audioCtx.currentTime;
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+      });
+      const blobUrl = URL.createObjectURL(new Blob([WORKLET_CODE], { type: "application/javascript" }));
+      await audioCtx.audioWorklet.addModule(blobUrl);
+      const srcNode = audioCtx.createMediaStreamSource(micStream);
+      workletNode = new AudioWorkletNode(audioCtx, "capture-processor");
+      workletNode.port.onmessage = (e) => {
+        if (!running) return;
+        if ($("halfDuplex").checked && agentSpeaking) return;  // half-duplex gate
+        const int16 = downsampleToInt16(e.data, audioCtx.sampleRate);
+        if (ws.readyState === WebSocket.OPEN) ws.send(int16.buffer);
+      };
+      srcNode.connect(workletNode);
+      // Worklet needs a sink to pull; route through a muted gain so we don't echo.
+      const sink = audioCtx.createGain();
+      sink.gain.value = 0;
+      workletNode.connect(sink).connect(audioCtx.destination);
+      running = true;
+      setStatus("connected");
+    } catch (err) {
+      setStatus("mic error: " + (err && err.message ? err.message : err));
+      stop();
+    }
   };
 
   ws.onmessage = (e) => {
@@ -156,8 +161,11 @@ async function start() {
 function stop() {
   running = false;
   if (workletNode) { try { workletNode.disconnect(); } catch (_) {} }
+  workletNode = null;
   if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  micStream = null;
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  agentSpeaking = false;
   if (ws && ws.readyState === WebSocket.OPEN) ws.close();
   $("start").classList.remove("stop");
   $("start").textContent = "Start";
