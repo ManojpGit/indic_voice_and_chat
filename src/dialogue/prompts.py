@@ -20,6 +20,32 @@ from typing import Any, Optional
 from src.dialogue.slots import SlotSchema
 
 
+class _SafeDict(dict):
+    """dict for str.format_map that leaves unknown ``{tokens}`` intact."""
+
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+def _render_opening(script: "VoiceBotScript", lead_data: dict[str, Any]) -> str:
+    """Substitute known template tokens in the opening for the prompt context.
+
+    Mirrors the tokens the telephony layer renders for the spoken opening
+    ({agent_name}, {lead_name}, company_name, plus any lead_data keys).
+    Unknown tokens are left as-is so a bad template never raises.
+    """
+    variables = {
+        "agent_name": script.agent_name,
+        "company_name": script.company_name,
+        "lead_name": (lead_data or {}).get("lead_name", "ji"),
+        **(lead_data or {}),
+    }
+    try:
+        return script.opening.strip().format_map(_SafeDict(variables))
+    except Exception:
+        return script.opening.strip()
+
+
 VOICEBOT_RESPONSE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["response_text", "language", "action"],
@@ -178,7 +204,10 @@ def build_voicebot_system_prompt(
         parts.append("Your objective on this call:\n" + script.objective.strip())
 
     if script.opening:
-        parts.append("Opening line (already spoken at the start of the call):\n" + script.opening.strip())
+        parts.append(
+            "Opening line (already spoken at the start of the call):\n"
+            + _render_opening(script, lead_data)
+        )
 
     if script.talking_points:
         bullets = "\n".join(f"- {p}" for p in script.talking_points)

@@ -143,3 +143,16 @@ def test_voicebot_prompt_is_generic_over_script() -> None:
     assert "REDIRECT ONLY WHEN" in prompt
     # Soft turn budget surfaced from the script's max_turns.
     assert "7 turns" in prompt
+
+
+def test_voicebot_prompt_renders_opening_tokens() -> None:
+    script = VoiceBotScript.from_campaign_yaml({
+        "agent_name": "Anaaya", "agent_role": "Sales", "company_name": "BM",
+        "greeting": "Hi {lead_name}, main {agent_name} bol rahi hoon. {unknown_token}",
+    })
+    prompt = build_voicebot_system_prompt(script, SlotSchema(), lead_data={"lead_name": "Raju"})
+    assert "Hi Raju, main Anaaya bol rahi hoon." in prompt
+    assert "{agent_name}" not in prompt
+    assert "{lead_name}" not in prompt
+    # Unknown tokens are left intact rather than crashing.
+    assert "{unknown_token}" in prompt
