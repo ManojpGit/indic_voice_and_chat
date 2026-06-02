@@ -157,9 +157,9 @@ class TwilioMediaBridge:
             self._stopped.set()
             return
 
-        # Accumulate + endpoint via the shared helper. Re-run detect inside the
-        # helper is cheap and keeps a single capture path across transports.
-        if accumulate_and_detect(pcm, self._vad, self._endpoint, self._capture_buffer):
+        # Accumulate + endpoint via the shared helper. Reuse the frame we already
+        # computed above so detect() runs once per chunk (matters for stateful VADs).
+        if accumulate_and_detect(pcm, self._vad, self._endpoint, self._capture_buffer, frame=frame):
             await self._dispatch_utterance()
 
     async def _dispatch_utterance(self) -> None:

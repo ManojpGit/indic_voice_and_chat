@@ -32,6 +32,33 @@ def test_accumulates_pcm_into_buffer():
     assert bytes(buf) == pcm
 
 
+def test_passed_frame_avoids_second_detect():
+    from src.pipeline.vad import VADFrame, EndpointDetector, EndpointConfig
+
+    class CountingVAD:
+        sample_rate = 16000
+        frame_ms = 30
+        def __init__(self):
+            self.calls = 0
+        def detect(self, pcm16):
+            self.calls += 1
+            return VADFrame(is_speech=True, energy=9999.0)
+        def reset(self):
+            pass
+
+    vad = CountingVAD()
+    endpoint = EndpointDetector(vad.frame_ms, EndpointConfig())
+    buf = bytearray()
+    precomputed = vad.detect(b"\x00\x00")   # calls == 1
+    accumulate_and_detect(b"\x00\x00", vad, endpoint, buf, frame=precomputed)
+    assert vad.calls == 1                    # helper did NOT call detect again
+    assert bytes(buf) == b"\x00\x00"         # still accumulated
+
+    # And without a frame, the helper DOES detect.
+    accumulate_and_detect(b"\x00\x00", vad, endpoint, buf)
+    assert vad.calls == 2
+
+
 def test_returns_true_at_end_of_utterance():
     vad = EnergyVAD(sample_rate=16000, frame_ms=30)
     # 250ms speech then 600ms silence => endpoint fires (defaults).
