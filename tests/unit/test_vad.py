@@ -121,3 +121,33 @@ async def test_interruption_watcher_brief_silence_decays_counter() -> None:
     assert await w.feed(VADFrame(is_speech=True, energy=500)) is False
     # One more pushes us over
     assert await w.feed(VADFrame(is_speech=True, energy=500)) is True
+
+
+def test_silero_vad_runs_torch_free() -> None:
+    """SileroVAD must run on onnxruntime without importing torch, on 512-sample
+    (32 ms @16 kHz) frames, returning probabilities in [0, 1]."""
+    import importlib.util
+    import sys
+
+    pytest.importorskip("onnxruntime")
+    if importlib.util.find_spec("silero_vad") is None:
+        pytest.skip("silero-vad (model files) not installed")
+
+    from src.pipeline.vad import SileroVAD
+
+    vad = SileroVAD(sample_rate=16000, frame_ms=32, threshold=0.5)
+    assert vad.frame_bytes == 1024  # 512 samples * 2 bytes
+
+    silence = b"\x00\x00" * 512
+    frame = vad.detect(silence)  # triggers lazy model load
+    assert 0.0 <= frame.probability <= 1.0
+    assert frame.is_speech is False  # silence is not speech
+
+    # State advances across frames without error; reset restores cleanly.
+    for _ in range(3):
+        vad.detect(silence)
+    vad.reset()
+    vad.detect(silence)
+
+    # The whole path is torch-free (torch is not even installed here).
+    assert "torch" not in sys.modules

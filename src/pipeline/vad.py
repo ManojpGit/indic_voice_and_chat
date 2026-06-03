@@ -70,13 +70,55 @@ class EnergyVAD:
 # --- SileroVAD ----------------------------------------------------------
 
 
+_SILERO_SESSION = None  # shared, stateless onnxruntime session (state is per-instance)
+
+
+def _silero_session():
+    """Load and cache the bundled silero ONNX model via onnxruntime.
+
+    Uses the model file shipped with the ``silero-vad`` package WITHOUT
+    importing the package (which pulls in torch). The session is stateless —
+    LSTM state is passed in/out per call — so it is safe to share across VADs.
+    """
+    global _SILERO_SESSION
+    if _SILERO_SESSION is not None:
+        return _SILERO_SESSION
+    import importlib.util
+    import os
+
+    import onnxruntime
+
+    spec = importlib.util.find_spec("silero_vad")
+    if spec is None or not spec.origin:
+        raise RuntimeError(
+            "SileroVAD requires the 'silero-vad' package (for its bundled ONNX "
+            "model) and 'onnxruntime'. Install with: pip install silero-vad onnxruntime"
+        )
+    model_path = os.path.join(os.path.dirname(spec.origin), "data", "silero_vad.onnx")
+    opts = onnxruntime.SessionOptions()
+    opts.inter_op_num_threads = 1
+    opts.intra_op_num_threads = 1
+    _SILERO_SESSION = onnxruntime.InferenceSession(
+        model_path, providers=["CPUExecutionProvider"], sess_options=opts
+    )
+    return _SILERO_SESSION
+
+
 class SileroVAD:
-    """Silero VAD wrapper. Loads the ONNX model lazily on first use."""
+    """Silero VAD via onnxruntime (no torch dependency).
+
+    Runs the bundled silero ONNX model directly. It distinguishes speech from
+    background noise far better than ``EnergyVAD``, which keeps utterance
+    endpointing from running on through room noise / speaker bleed.
+
+    The model requires fixed frame sizes: 512 samples at 16 kHz (``frame_ms=32``)
+    or 256 samples at 8 kHz. Feed exactly that many samples per ``detect`` call.
+    """
 
     def __init__(
         self,
         sample_rate: int = 16000,
-        frame_ms: int = 30,
+        frame_ms: int = 32,
         threshold: float = 0.5,
     ) -> None:
         if sample_rate not in (8000, 16000):
@@ -84,37 +126,42 @@ class SileroVAD:
         self.sample_rate = sample_rate
         self.frame_ms = frame_ms
         self._threshold = threshold
-        self._model = None  # lazy
-        self._utils = None
+        self._context_size = 64 if sample_rate == 16000 else 32
+        self._session = None  # lazy
+        self._state = None
+        self._context = None
 
     def _ensure_model(self) -> None:
-        if self._model is not None:
+        if self._session is not None:
             return
-        # Lazy import — pulls torch in. Tests should not exercise this path.
-        try:
-            import torch  # noqa: F401
-            from silero_vad import load_silero_vad  # type: ignore[import-not-found]
-        except ImportError as e:
-            raise RuntimeError(
-                "SileroVAD requires the 'silero-vad' package and torch. "
-                "Install with: pip install silero-vad torch"
-            ) from e
-        self._model = load_silero_vad(onnx=True)
+        self._session = _silero_session()
+        self.reset()
 
     @property
     def frame_bytes(self) -> int:
         return int(self.sample_rate * self.frame_ms / 1000) * 2
 
     def detect(self, pcm16: bytes) -> VADFrame:
-        self._ensure_model()
         import numpy as np
-        import torch  # type: ignore[import-not-found]
 
+        self._ensure_model()
         samples = np.frombuffer(pcm16, dtype=np.int16).astype(np.float32) / 32768.0
         if samples.size == 0:
             return VADFrame(is_speech=False, energy=0.0, probability=0.0)
-        tensor = torch.from_numpy(samples)
-        prob = float(self._model(tensor, self.sample_rate).item())
+        x = samples.reshape(1, -1)
+        # silero v5 expects the saved context (last 64 samples) prepended.
+        inp = np.concatenate([self._context, x], axis=1).astype(np.float32)
+        out, new_state = self._session.run(
+            None,
+            {
+                "input": inp,
+                "state": self._state,
+                "sr": np.array(self.sample_rate, dtype=np.int64),
+            },
+        )
+        self._state = new_state
+        self._context = x[:, -self._context_size:]
+        prob = float(out[0][0])
         return VADFrame(
             is_speech=prob >= self._threshold,
             energy=rms_energy_pcm16(pcm16),
@@ -122,8 +169,10 @@ class SileroVAD:
         )
 
     def reset(self) -> None:
-        if self._model is not None and hasattr(self._model, "reset_states"):
-            self._model.reset_states()
+        import numpy as np
+
+        self._state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._context = np.zeros((1, self._context_size), dtype=np.float32)
 
 
 # --- Endpoint detection -------------------------------------------------

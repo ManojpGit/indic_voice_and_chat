@@ -35,8 +35,10 @@ dependencies = [
 
 [project.optional-dependencies]
 voice = [
+    # Silero VAD runs via its bundled ONNX model on onnxruntime (no torch),
+    # which keeps the install light and works on platforms torch has dropped.
     "silero-vad>=5.1",
-    "torch>=2.2",
+    "onnxruntime>=1.17",
 ]
 embeddings = [
     "sentence-transformers>=2.7",

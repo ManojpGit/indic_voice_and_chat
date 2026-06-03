@@ -30,7 +30,7 @@ from src.interfaces.llm import LLMConfig
 from src.interfaces.stt import STTConfig
 from src.interfaces.tts import TTSConfig
 from src.pipeline.engine import PipelineConfig, PipelineEngine
-from src.pipeline.vad import EnergyVAD
+from src.pipeline.vad import EnergyVAD, SileroVAD
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +90,21 @@ async def dev_voice_ws(websocket: WebSocket) -> None:
             pass
 
 
+def _build_browser_vad():
+    """VAD for the dev console: prefer Silero (robust speech/noise discrimination
+    so turns end cleanly on speakers); fall back to EnergyVAD if onnxruntime or
+    the model isn't available. Silero needs 32 ms / 512-sample frames at 16 kHz.
+    """
+    try:
+        vad = SileroVAD(sample_rate=16000, frame_ms=32, threshold=0.5)
+        vad._ensure_model()  # load now so a failure falls back here, not mid-call
+        log.info("dev console using SileroVAD")
+        return vad
+    except Exception as e:  # noqa: BLE001
+        log.warning("SileroVAD unavailable (%s); using EnergyVAD", e)
+        return EnergyVAD(sample_rate=16000, frame_ms=30, rms_threshold=300.0)
+
+
 def make_browser_bridge_factory(
     providers: TenantProviders,
     script: VoiceBotScript = DEFAULT_DEMO_SCRIPT,
@@ -139,7 +154,7 @@ def make_browser_bridge_factory(
         return BrowserVoiceBridge(
             websocket=websocket,
             agent=agent,
-            vad=EnergyVAD(sample_rate=16000, frame_ms=30, rms_threshold=300.0),
+            vad=_build_browser_vad(),
             config=BrowserBridgeConfig(),
         )
 
