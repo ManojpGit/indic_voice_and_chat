@@ -85,6 +85,15 @@ class TenantSTTConfig(BaseModel):
     api_key_env: Optional[str] = None
 
 
+class TenantStreamingSTTConfig(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    language: Optional[str] = None
+    endpointing: Optional[int] = None
+    utterance_end_ms: Optional[int] = None
+    api_key_env: Optional[str] = None
+
+
 class TenantLLMConfig(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
@@ -118,6 +127,7 @@ class TenantVectorStoreConfig(BaseModel):
 
 class TenantPipelineConfig(BaseModel):
     stt: TenantSTTConfig = Field(default_factory=TenantSTTConfig)
+    stt_streaming: Optional[TenantStreamingSTTConfig] = None
     llm: TenantLLMConfig = Field(default_factory=TenantLLMConfig)
     tts: TenantTTSConfig = Field(default_factory=TenantTTSConfig)
     telephony: TenantTelephonyConfig = Field(default_factory=TenantTelephonyConfig)

@@ -31,6 +31,17 @@ pipeline:
     language: hi-IN
     api_key_env: TENANT_DEV_GROQ_KEY
 
+  # Streaming STT for the dev console (Deepgram live). When present, the browser
+  # bridge streams audio live and uses Deepgram endpointing; pipeline.stt (Groq)
+  # remains the batch fallback. Telephony bridges ignore this block.
+  stt_streaming:
+    provider: deepgram
+    model: nova-2          # nova-2 hi validated; nova-3 multi also works
+    language: hi
+    endpointing: 300       # ms of trailing silence -> speech_final (tune live)
+    utterance_end_ms: 1000
+    api_key_env: TENANT_DEV_DEEPGRAM_KEY
+
   llm:
     provider: gemini
     # gemini-2.5-flash is the sweet spot: good dialogue quality with the best
