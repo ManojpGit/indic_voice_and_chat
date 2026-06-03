@@ -26,6 +26,7 @@ dependencies = [
     "groq>=0.11",
     "google-genai>=0.3",
     "anthropic>=0.40",
+    "deepgram-sdk>=3.7",
     "twilio>=9.0",
     "python-json-logger>=2.0",
     "pypdf>=4.0",

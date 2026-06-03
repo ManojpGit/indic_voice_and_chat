@@ -132,3 +132,16 @@ def test_adapter_rejects_missing_key(monkeypatch):
     monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
     with pytest.raises(ValueError):
         DeepgramSTTAdapter({})
+
+
+def test_registry_resolves_deepgram():
+    from src.providers import STREAMING_STT_PROVIDERS, get_streaming_stt_provider
+    assert STREAMING_STT_PROVIDERS["deepgram"].__name__ == "DeepgramSTTAdapter"
+    provider = get_streaming_stt_provider({"provider": "deepgram", "api_key": "x"})
+    assert provider.__class__.__name__ == "DeepgramSTTAdapter"
+
+
+def test_registry_unknown_provider_raises():
+    from src.providers import get_streaming_stt_provider, UnknownProviderError
+    with pytest.raises(UnknownProviderError):
+        get_streaming_stt_provider({"provider": "nope", "api_key": "x"})

@@ -11,13 +11,14 @@ from __future__ import annotations
 from typing import Any
 
 from src.interfaces.llm import ILLMProvider
-from src.interfaces.stt import ISTTProvider
+from src.interfaces.stt import ISTTProvider, IStreamingSTTProvider
 from src.interfaces.telephony import ITelephonyProvider
 from src.interfaces.tts import ITTSProvider
 from src.interfaces.vector_store import IVectorStore
 from src.providers.llm.anthropic_claude import AnthropicClaudeAdapter
 from src.providers.llm.gemini import GeminiLLMAdapter
 from src.providers.llm.groq import GroqLLMAdapter
+from src.providers.stt.deepgram import DeepgramSTTAdapter
 from src.providers.stt.groq_whisper import GroqSTTAdapter
 from src.providers.stt.sarvam import SarvamSTTAdapter
 from src.providers.telephony.exotel import ExotelAdapter
@@ -31,6 +32,10 @@ from src.providers.vector_store.faiss_store import FAISSAdapter
 STT_PROVIDERS: dict[str, type[ISTTProvider]] = {
     "sarvam": SarvamSTTAdapter,
     "groq": GroqSTTAdapter,
+}
+
+STREAMING_STT_PROVIDERS: dict[str, type[IStreamingSTTProvider]] = {
+    "deepgram": DeepgramSTTAdapter,
 }
 
 LLM_PROVIDERS: dict[str, type[ILLMProvider]] = {
@@ -75,6 +80,11 @@ def get_stt_provider(config: dict[str, Any]) -> ISTTProvider:
     return cls(config)
 
 
+def get_streaming_stt_provider(config: dict[str, Any]) -> IStreamingSTTProvider:
+    cls = _lookup(STREAMING_STT_PROVIDERS, config["provider"], "streaming STT")
+    return cls(config)
+
+
 def get_llm_provider(config: dict[str, Any]) -> ILLMProvider:
     cls = _lookup(LLM_PROVIDERS, config["provider"], "LLM")
     return cls(config)
@@ -97,12 +107,14 @@ def get_vector_store(config: dict[str, Any]) -> IVectorStore:
 
 __all__ = [
     "STT_PROVIDERS",
+    "STREAMING_STT_PROVIDERS",
     "LLM_PROVIDERS",
     "TTS_PROVIDERS",
     "TELEPHONY_PROVIDERS",
     "VECTOR_STORE_PROVIDERS",
     "UnknownProviderError",
     "get_stt_provider",
+    "get_streaming_stt_provider",
     "get_llm_provider",
     "get_tts_provider",
     "get_telephony_provider",
