@@ -121,7 +121,13 @@ async function start() {
       workletNode = new AudioWorkletNode(audioCtx, "capture-processor");
       workletNode.port.onmessage = (e) => {
         if (!running) return;
-        if ($("halfDuplex").checked && agentSpeaking) return;  // half-duplex gate
+        // Half-duplex gate: drop mic frames while the agent is speaking OR while
+        // its audio is still scheduled to play (playCursor is ahead of the clock).
+        // The server flips to "listening" as soon as it has *sent* the audio, but
+        // on speakers the audio is still playing — without this the mic captures
+        // the agent's own voice and it talks to itself.
+        const stillPlaying = playCursor > audioCtx.currentTime + 0.05;
+        if ($("halfDuplex").checked && (agentSpeaking || stillPlaying)) return;
         const int16 = downsampleToInt16(e.data, audioCtx.sampleRate);
         if (ws.readyState === WebSocket.OPEN) ws.send(int16.buffer);
       };

@@ -166,6 +166,15 @@ class BrowserVoiceBridge:
         await self._send_json({"type": "status", "status": "thinking"})
         outcome = await self._agent.handle_turn(captured, self._send_pcm)
 
+        log.info(
+            "browser turn",
+            extra={
+                "captured_bytes": len(captured),
+                "user_text": (outcome.pipeline.user_text or "")[:120],
+                "agent_text": (outcome.response.response_text or "")[:120],
+                "error": outcome.response.parse_error or "",
+            },
+        )
         user_text = outcome.pipeline.user_text
         if user_text:
             await self._send_json({"type": "transcript", "role": "user", "text": user_text})
