@@ -31,6 +31,7 @@ from src.interfaces.stt import STTConfig
 from src.interfaces.tts import TTSConfig
 from src.pipeline.engine import PipelineConfig, PipelineEngine
 from src.pipeline.vad import EnergyVAD, SileroVAD
+from src.providers import get_streaming_stt_provider
 
 log = logging.getLogger(__name__)
 
@@ -105,6 +106,31 @@ def _build_browser_vad():
         return EnergyVAD(sample_rate=16000, frame_ms=30, rms_threshold=300.0)
 
 
+def _build_stream_provider(tenant: TenantContext):
+    """Build a streaming-STT provider from pipeline.stt_streaming, or None.
+
+    Returns None when no streaming config is present (batch behaviour) or when
+    the provider can't be constructed (e.g. missing key) — the bridge then
+    falls back to batch Groq, so this never blocks a call.
+    """
+    cfg = getattr(tenant.settings.pipeline, "stt_streaming", None)
+    if cfg is None or not getattr(cfg, "provider", None):
+        return None
+    try:
+        merged = {
+            "provider": cfg.provider,
+            "model": cfg.model,
+            "language": cfg.language,
+            "endpointing": cfg.endpointing,
+            "utterance_end_ms": cfg.utterance_end_ms,
+            "api_key": tenant.secret(cfg.api_key_env) if cfg.api_key_env else None,
+        }
+        return get_streaming_stt_provider(merged)
+    except Exception as e:  # noqa: BLE001 - never block a call on streaming setup
+        log.warning("streaming STT provider unavailable (%s); using batch", e)
+        return None
+
+
 def make_browser_bridge_factory(
     providers: TenantProviders,
     script: VoiceBotScript = DEFAULT_DEMO_SCRIPT,
@@ -156,6 +182,7 @@ def make_browser_bridge_factory(
             agent=agent,
             vad=_build_browser_vad(),
             config=BrowserBridgeConfig(),
+            stream_provider=_build_stream_provider(tenant),
         )
 
     return factory

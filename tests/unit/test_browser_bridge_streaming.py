@@ -108,3 +108,32 @@ async def test_endpoint_ignored_while_agent_busy():
     bridge._agent_busy = True
     await bridge._consume_stream_events(session)
     assert bridge._agent.text_turns == []
+
+
+def test_build_streaming_provider_from_tenant():
+    from types import SimpleNamespace
+    from src.api.dev_console import _build_stream_provider
+
+    tenant = SimpleNamespace(
+        settings=SimpleNamespace(pipeline=SimpleNamespace(
+            stt_streaming=SimpleNamespace(
+                provider="deepgram", model="nova-2", language="hi",
+                endpointing=300, utterance_end_ms=1000,
+                api_key_env="TENANT_DEV_DEEPGRAM_KEY",
+            )
+        )),
+        secret=lambda env: "dg_secret" if env == "TENANT_DEV_DEEPGRAM_KEY" else None,
+    )
+    provider = _build_stream_provider(tenant)
+    assert provider.__class__.__name__ == "DeepgramSTTAdapter"
+
+
+def test_build_streaming_provider_none_when_unconfigured():
+    from types import SimpleNamespace
+    from src.api.dev_console import _build_stream_provider
+
+    tenant = SimpleNamespace(
+        settings=SimpleNamespace(pipeline=SimpleNamespace(stt_streaming=None)),
+        secret=lambda env: None,
+    )
+    assert _build_stream_provider(tenant) is None
