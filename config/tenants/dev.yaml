@@ -36,7 +36,7 @@ pipeline:
     # flash-lite cuts time-to-first-token from ~2.3s to ~0.75s on this prompt —
     # the dominant latency in the voice loop. Switch to gemini-2.5-flash if you
     # need higher dialogue quality and can tolerate the extra ~1.5s.
-    model: gemini-2.5-flash-lite
+    model: gemini-2.5-flash
     temperature: 0.5
     # The JSON response envelope (response_text + slots + metadata, in Hindi)
     # needs well over 256 tokens; a tight cap truncates it into invalid JSON.
