@@ -237,3 +237,52 @@ async def test_run_turn_metrics_populated() -> None:
 
 async def _drop_sink(b: bytes) -> None:
     pass
+
+
+@pytest.mark.asyncio
+async def test_json_mode_streams_response_text_before_envelope_completes() -> None:
+    """TTS must start on the first sentence of response_text while the LLM is
+    still emitting the trailing JSON metadata — streaming, not buffer-then-speak."""
+    tts_started = asyncio.Event()
+    order: list[str] = []
+
+    class _OrderedLLM(ILLMProvider):
+        async def generate(self, messages, config):
+            return LLMResult(text="", finish_reason="stop")
+
+        async def generate_stream(self, messages, config):
+            yield '{"response_text": "Pehla vaakya hai. '
+            yield 'Doosra vaakya hai. '
+            yield '", "action": "continue",'
+            # Don't finish the envelope until TTS has begun the first sentence.
+            await asyncio.wait_for(tts_started.wait(), timeout=2.0)
+            order.append("llm_done")
+            yield ' "internal_notes": "ek lamba note yahan likha hai"}'
+
+    class _OrderedTTS(ITTSProvider):
+        def __init__(self) -> None:
+            self.synthesized: list[str] = []
+
+        async def synthesize(self, text: str, config: TTSConfig) -> TTSResult:
+            order.append("tts")
+            tts_started.set()
+            self.synthesized.append(text)
+            return TTSResult(audio=text.encode(), duration_ms=10.0, sample_rate=config.sample_rate)
+
+        async def synthesize_stream(self, text_stream, config):
+            if False:
+                yield  # pragma: no cover
+
+        def get_available_voices(self, language: str):
+            return []
+
+    tts = _OrderedTTS()
+    engine = PipelineEngine(FakeSTT(text="haan"), _OrderedLLM(), tts, _config("json"))
+    await engine.run_turn(b"\x00", [], audio_sink=_drop_sink)
+
+    spoken = " ".join(tts.synthesized)
+    assert "Pehla vaakya hai." in spoken
+    assert "internal_notes" not in spoken and "action" not in spoken
+    # TTS began before the LLM finished the envelope.
+    assert order and order[0] == "tts"
+    assert "llm_done" in order and order.index("tts") < order.index("llm_done")

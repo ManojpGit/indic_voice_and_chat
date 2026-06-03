@@ -76,6 +76,89 @@ def _speakable_from_json(raw: str) -> str:
     return ""
 
 
+class _SpokenTextExtractor:
+    """Incrementally pull the ``response_text`` value out of a streaming JSON
+    envelope, so TTS can start on the first sentence instead of waiting for the
+    whole envelope (which includes trailing metadata) to finish generating.
+
+    ``feed(token)`` returns any newly-decoded characters of ``response_text``
+    (JSON string escapes handled), or '' if none are available yet. Once the
+    value's closing quote is seen, further tokens return ''.
+    """
+
+    _KEY = '"response_text"'
+
+    def __init__(self) -> None:
+        self._joined = ""
+        self._value_start = -1  # index where the value's content begins
+        self._consumed = 0      # decoded chars already returned
+        self._closed = False
+
+    def feed(self, token: str) -> str:
+        self._joined += token
+        if self._closed:
+            return ""
+        if self._value_start < 0:
+            self._locate_value_start()
+            if self._value_start < 0:
+                return ""
+        return self._emit_new()
+
+    def _locate_value_start(self) -> None:
+        s = self._joined
+        k = s.find(self._KEY)
+        if k < 0:
+            return
+        i = k + len(self._KEY)
+        while i < len(s) and s[i] in " \t\r\n":
+            i += 1
+        if i >= len(s) or s[i] != ":":
+            return
+        i += 1
+        while i < len(s) and s[i] in " \t\r\n":
+            i += 1
+        if i >= len(s) or s[i] != '"':
+            return
+        self._value_start = i + 1
+
+    def _emit_new(self) -> str:
+        s = self._joined
+        i = self._value_start
+        decoded: list[str] = []
+        closed = False
+        _simple = {'"': '"', "\\": "\\", "/": "/", "n": "\n",
+                   "t": "\t", "r": "\r", "b": "\b", "f": "\f"}
+        while i < len(s):
+            c = s[i]
+            if c == "\\":
+                if i + 1 >= len(s):
+                    break  # incomplete escape — wait for more tokens
+                e = s[i + 1]
+                if e in _simple:
+                    decoded.append(_simple[e]); i += 2; continue
+                if e == "u":
+                    if i + 6 > len(s):
+                        break  # incomplete \uXXXX
+                    try:
+                        decoded.append(chr(int(s[i + 2:i + 6], 16)))
+                    except ValueError:
+                        decoded.append(s[i + 2:i + 6])
+                    i += 6
+                    continue
+                decoded.append(e); i += 2; continue
+            if c == '"':
+                closed = True
+                break
+            decoded.append(c)
+            i += 1
+        full = "".join(decoded)
+        new = full[self._consumed:]
+        self._consumed = len(full)
+        if closed:
+            self._closed = True
+        return new
+
+
 @dataclass
 class TurnMetrics:
     stt_latency_ms: int = 0
@@ -201,10 +284,13 @@ class PipelineEngine:
 
         tts_task = asyncio.create_task(tts_worker())
 
-        # In JSON mode the stream is a structured envelope, not speech: buffer
-        # it and speak only the parsed response_text. In plain-text mode we
-        # stream tokens to TTS sentence-by-sentence for low latency.
+        # In JSON mode the stream is a structured envelope, not speech: pull the
+        # response_text value out incrementally so TTS starts on the first
+        # sentence instead of waiting for the whole envelope. Plain-text mode
+        # streams tokens straight through.
         is_json = getattr(self._config.llm, "response_format", None) == "json"
+        extractor = _SpokenTextExtractor() if is_json else None
+        spoke_anything = False
 
         try:
             async for token in self._llm.generate_stream(messages, self._config.llm):
@@ -213,14 +299,17 @@ class PipelineEngine:
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
                 full_text_parts.append(token)
-                if not is_json:
-                    for sentence in detector.feed(token):
+                speakable = extractor.feed(token) if extractor is not None else token
+                if speakable:
+                    spoke_anything = True
+                    for sentence in detector.feed(speakable):
                         await sentence_queue.put(sentence)
 
-            # Flush the LLM tail. Only speak it if cancellation hasn't fired.
+            # Flush the tail. Only speak it if cancellation hasn't fired.
             if not cancel_event.is_set():
-                if is_json:
-                    # Speak only response_text, never the raw JSON envelope.
+                # Fallback: unexpected JSON shape (no response_text streamed) —
+                # recover it from the full buffered output.
+                if is_json and not spoke_anything:
                     for sentence in detector.feed(_speakable_from_json("".join(full_text_parts))):
                         await sentence_queue.put(sentence)
                 for sentence in detector.flush():
