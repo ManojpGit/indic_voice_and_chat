@@ -179,11 +179,16 @@ def build_voicebot_system_prompt(
     if script.conversation_style:
         parts.append(f"Conversation style: {script.conversation_style}.")
 
-    # Language policy.
+    # Language policy. The reply is spoken by an Indic (e.g. Hindi) TTS that
+    # cannot pronounce Latin script, so response_text MUST be in the native
+    # script — romanized/English text comes out garbled ("drunk").
     parts.append(
-        f"Default language: {script.language_default}. Mirror the user's language and "
-        "match their level of formality. Code-switch (Hindi/English mixing) is fine "
-        "if the user does it."
+        f"Speak in {script.language_default}. CRITICAL: write `response_text` ONLY in the "
+        "native script of that language (Devanagari for Hindi) — NEVER in romanized/Latin "
+        "letters or English sentences. Your reply is spoken aloud by a Hindi text-to-speech "
+        "voice that mispronounces Latin script. So even if the user speaks in English or "
+        "types Hinglish in Latin letters, you reply in natural, warm Hindi written in "
+        "Devanagari. Match their level of formality. (Well-known brand names may stay as-is.)"
     )
 
     # Customer-led behavior (fixed policy, generic over every campaign).
