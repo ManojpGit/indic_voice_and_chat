@@ -17,8 +17,10 @@ untouched; this class only does framing + debug events.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 
 from src.pipeline.turn_capture import accumulate_and_detect
@@ -56,6 +58,10 @@ class BrowserVoiceBridge:
         self._frame_bytes = int(self._config.pcm_sample_rate * vad.frame_ms / 1000) * 2
         self._endpoint = EndpointDetector(vad.frame_ms, self._config.endpoint)
         self._stopped = False
+        # Wall-clock estimate of when the browser's queued playback will finish,
+        # mirroring its gapless scheduling. Used to avoid closing the socket
+        # (which tears down playback) before the final line has been heard.
+        self._play_until = 0.0
 
     # --- outbound helpers ---------------------------------------------
 
@@ -73,6 +79,10 @@ class BrowserVoiceBridge:
         await self._send_json({"type": "status", "status": "speaking"})
         for i in range(0, len(pcm16), _SEND_CHUNK):
             await self._ws.send_bytes(pcm16[i : i + _SEND_CHUNK])
+        # Track when this audio will finish playing (16-bit mono PCM), mirroring
+        # the browser's gapless scheduling, so a terminal turn can wait for it.
+        duration_s = len(pcm16) / 2 / self._config.pcm_sample_rate
+        self._play_until = max(self._play_until, time.monotonic()) + duration_s
         await self._send_json({"type": "status", "status": "listening"})
 
     # --- entrypoint ---------------------------------------------------
@@ -192,6 +202,12 @@ class BrowserVoiceBridge:
 
         if getattr(self._agent.state, "is_terminal", False):
             self._stopped = True
+            # The call is ending: let the browser finish playing the closing
+            # line before run() returns and the socket closes (closing the
+            # socket tears down playback and cuts the line off).
+            remaining = self._play_until - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(remaining + 0.5)
             return
         self._reset_capture()  # drop audio captured while the agent was busy
         await self._send_json({"type": "status", "status": "listening"})
