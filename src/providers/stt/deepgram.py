@@ -1,0 +1,195 @@
+"""Deepgram streaming STT adapter (live websocket).
+
+Implements IStreamingSTTProvider. One DeepgramStreamSession owns a single
+live websocket to Deepgram's /v1/listen endpoint, feeds it PCM16 audio, and
+emits STTStreamEvents (interim / final / endpoint). Message-parse and
+accumulation live in the pure ``_handle_raw`` method for testability; the
+async receiver loop just calls it and enqueues non-None events. A keepalive
+task sends ``{"type":"KeepAlive"}`` so the socket survives agent-speech gaps.
+
+Uses the ``websockets`` library directly (bundled with deepgram-sdk) for full
+control over framing/keepalive and easy faking in tests; the deepgram-sdk
+callback client is not used.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
+from urllib.parse import urlencode
+
+from src.interfaces.stt import (
+    ISTTStreamSession,
+    IStreamingSTTProvider,
+    STTConfig,
+    STTStreamEvent,
+)
+
+DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen"
+DEFAULT_MODEL = "nova-2"
+DEFAULT_LANGUAGE = "hi"
+
+Connector = Callable[[str, dict[str, str]], Awaitable[Any]]
+
+
+class DeepgramStreamSession(ISTTStreamSession):
+    def __init__(
+        self,
+        ws: Any,
+        *,
+        keepalive_interval: float = 5.0,
+        start_tasks: bool = True,
+    ) -> None:
+        self._ws = ws
+        self._keepalive_interval = keepalive_interval
+        self._queue: asyncio.Queue[Optional[STTStreamEvent]] = asyncio.Queue()
+        self._acc: list[str] = []
+        self._endpointed = False
+        self._closed = False
+        self._tasks: list[asyncio.Task] = []
+        if start_tasks:
+            self._tasks.append(asyncio.create_task(self._receiver()))
+            self._tasks.append(asyncio.create_task(self._keepalive()))
+
+    def _handle_raw(self, raw: str) -> Optional[STTStreamEvent]:
+        try:
+            msg = json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+        mtype = msg.get("type")
+        if mtype == "UtteranceEnd":
+            if self._endpointed:
+                return None
+            text = " ".join(self._acc).strip()
+            self._reset_utterance()
+            if not text:
+                return None
+            return STTStreamEvent(type="endpoint", text=text)
+        if mtype != "Results":
+            return None
+        alt = (msg.get("channel", {}).get("alternatives") or [{}])[0]
+        transcript = (alt.get("transcript") or "").strip()
+        is_final = bool(msg.get("is_final"))
+        speech_final = bool(msg.get("speech_final"))
+        conf = float(alt.get("confidence", 1.0) or 1.0)
+        if speech_final:
+            if transcript:
+                self._acc.append(transcript)
+            text = " ".join(self._acc).strip()
+            self._reset_utterance(endpointed=True)
+            if not text:
+                return None
+            return STTStreamEvent(type="endpoint", text=text, confidence=conf)
+        if not transcript:
+            return None
+        if is_final:
+            self._acc.append(transcript)
+            return STTStreamEvent(type="final", text=transcript, confidence=conf)
+        return STTStreamEvent(type="interim", text=transcript, confidence=conf)
+
+    def _reset_utterance(self, endpointed: bool = False) -> None:
+        self._acc = []
+        self._endpointed = endpointed
+
+    async def _receiver(self) -> None:
+        try:
+            async for raw in self._ws:
+                ev = self._handle_raw(raw if isinstance(raw, str) else raw.decode("utf-8"))
+                if ev is not None:
+                    await self._queue.put(ev)
+        except Exception:  # noqa: BLE001 - surface as end-of-stream
+            pass
+        finally:
+            await self._queue.put(None)
+
+    async def _keepalive(self) -> None:
+        try:
+            while not self._closed:
+                await asyncio.sleep(self._keepalive_interval)
+                if self._closed:
+                    return
+                await self._ws.send(json.dumps({"type": "KeepAlive"}))
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def send(self, pcm16: bytes) -> None:
+        if self._closed:
+            return
+        await self._ws.send(pcm16)
+
+    async def events(self) -> AsyncIterator[STTStreamEvent]:
+        while True:
+            ev = await self._queue.get()
+            if ev is None:
+                return
+            yield ev
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            await self._ws.send(json.dumps({"type": "CloseStream"}))
+        except Exception:  # noqa: BLE001
+            pass
+        for t in self._tasks:
+            t.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        try:
+            await self._ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+class DeepgramSTTAdapter(IStreamingSTTProvider):
+    def __init__(self, config: dict[str, Any]) -> None:
+        self._api_key = config.get("api_key") or os.environ.get("DEEPGRAM_API_KEY")
+        if not self._api_key:
+            raise ValueError(
+                "DeepgramSTTAdapter requires an API key (config 'api_key' or "
+                "DEEPGRAM_API_KEY env var)"
+            )
+        self._model = config.get("model") or DEFAULT_MODEL
+        self._language = config.get("language") or DEFAULT_LANGUAGE
+        self._endpointing = int(config.get("endpointing") or 300)
+        self._utterance_end_ms = int(config.get("utterance_end_ms") or 1000)
+        self._keepalive_interval = float(config.get("keepalive_interval") or 5.0)
+        self._connector: Connector = config.get("connector") or _default_connector
+
+    def _build_url(self, config: STTConfig) -> str:
+        params = {
+            "encoding": "linear16",
+            "sample_rate": config.sample_rate or 16000,
+            "channels": 1,
+            "model": self._model,
+            "language": config.language or self._language,
+            "smart_format": "true",
+            "interim_results": "true",
+            "endpointing": self._endpointing,
+            "utterance_end_ms": self._utterance_end_ms,
+        }
+        return f"{DEEPGRAM_WS_URL}?{urlencode(params)}"
+
+    async def open_stream(self, config: STTConfig) -> ISTTStreamSession:
+        url = self._build_url(config)
+        headers = {"Authorization": f"Token {self._api_key}"}
+        ws = await self._connector(url, headers)
+        return DeepgramStreamSession(
+            ws, keepalive_interval=self._keepalive_interval, start_tasks=True
+        )
+
+
+async def _default_connector(url: str, headers: dict[str, str]) -> Any:
+    try:
+        import websockets  # bundled with deepgram-sdk
+    except ImportError as e:  # pragma: no cover
+        raise RuntimeError(
+            "DeepgramSTTAdapter requires 'websockets' (install deepgram-sdk)."
+        ) from e
+    try:
+        return await websockets.connect(url, additional_headers=headers)
+    except TypeError:  # pragma: no cover - older websockets
+        return await websockets.connect(url, extra_headers=headers)
