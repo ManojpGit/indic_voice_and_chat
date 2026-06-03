@@ -28,6 +28,7 @@
   <h1>Voice Dev Console <span class="hint">— use headphones to avoid echo</span></h1>
   <div class="row">
     <button id="start">Start</button>
+    <label>Lead name <input id="leadName" value="Raju" placeholder="e.g. Raju" style="width:8rem" /></label>
     <label><input type="checkbox" id="halfDuplex" checked /> Mute mic while agent speaks</label>
     <span id="status">idle</span>
   </div>
@@ -104,17 +105,16 @@ registerProcessor('capture-processor', CaptureProcessor);
 
 async function start() {
   const wsProto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${wsProto}://${location.host}/api/v1/dev/voice?tenant=dev`);
+  const leadName = ($("leadName").value || "").trim();
+  const qs = "tenant=dev" + (leadName ? "&lead_name=" + encodeURIComponent(leadName) : "");
+  ws = new WebSocket(`${wsProto}://${location.host}/api/v1/dev/voice?${qs}`);
   ws.binaryType = "arraybuffer";
 
   ws.onopen = async () => {
+    console.log("[devconsole] ws open; sending hello + wiring audio");
     ws.send(JSON.stringify({ type: "hello", tenant: "dev" }));
     try {
-      audioCtx = new AudioContext();
-      playCursor = audioCtx.currentTime;
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
-      });
+      // micStream + audioCtx were already acquired during the click gesture.
       const blobUrl = URL.createObjectURL(new Blob([WORKLET_CODE], { type: "application/javascript" }));
       await audioCtx.audioWorklet.addModule(blobUrl);
       const srcNode = audioCtx.createMediaStreamSource(micStream);
@@ -131,9 +131,11 @@ async function start() {
       sink.gain.value = 0;
       workletNode.connect(sink).connect(audioCtx.destination);
       running = true;
+      console.log("[devconsole] audio ready; mic streaming, listening");
       setStatus("connected");
     } catch (err) {
-      setStatus("mic error: " + (err && err.message ? err.message : err));
+      console.error("[devconsole] audio worklet setup FAILED:", err);
+      setStatus("audio error: " + (err && err.message ? err.message : err));
       stop();
     }
   };
@@ -153,11 +155,19 @@ async function start() {
     } else if (msg.type === "state") {
       $("state").textContent =
         "state: " + msg.state + "\nslots: " + JSON.stringify(msg.slots, null, 2);
+    } else if (msg.type === "error") {
+      console.error("[devconsole] turn error:", msg.message);
+      const div = document.createElement("div");
+      div.className = "turn";
+      div.style.color = "#fca5a5";
+      div.textContent = "⚠ " + msg.message;
+      $("transcript").appendChild(div);
+      $("transcript").scrollTop = $("transcript").scrollHeight;
     }
   };
 
-  ws.onclose = () => { stop(); setStatus("closed"); };
-  ws.onerror = () => { setStatus("connection error"); };
+  ws.onclose = (e) => { console.warn("[devconsole] ws CLOSED code=", e.code, "reason=", e.reason, "wasClean=", e.wasClean); stop(); setStatus("closed"); };
+  ws.onerror = (e) => { console.error("[devconsole] ws ERROR", e); setStatus("connection error"); };
 }
 
 function stop() {
@@ -173,8 +183,29 @@ function stop() {
   $("start").textContent = "Start";
 }
 
-$("start").onclick = () => {
+$("start").onclick = async () => {
   if (running) { stop(); return; }
+  // Acquire the mic + audio context DURING the click gesture, before opening the
+  // WebSocket. This ties the permission prompt to the user gesture (strict
+  // browsers deny a mic request made later, from ws.onopen) and lets us surface
+  // a denial clearly without opening a doomed connection.
+  setStatus("requesting microphone…");
+  try {
+    audioCtx = new AudioContext();
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+    });
+  } catch (err) {
+    console.error("[devconsole] mic/audio init failed:", err);
+    setStatus(
+      "microphone blocked (" + (err && err.name ? err.name : err) +
+      ") — click the site icon in the address bar, set Microphone to Allow, then click Start again"
+    );
+    if (audioCtx) { try { audioCtx.close(); } catch (_) {} audioCtx = null; }
+    return;  // do NOT open the websocket when the mic is unavailable
+  }
+  playCursor = audioCtx.currentTime;
   $("start").classList.add("stop");
   $("start").textContent = "Stop";
   start();

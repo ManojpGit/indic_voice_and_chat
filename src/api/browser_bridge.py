@@ -80,26 +80,40 @@ class BrowserVoiceBridge:
     async def run(self) -> None:
         """Drive the connection until the browser disconnects or the agent ends."""
         await self._agent.start()
+        mic_frames = 0
+        exit_reason = "loop-end"
         try:
             # 1) Handshake: first text frame selects the tenant (already resolved
             #    by the caller, so we just consume it). Then play the opening.
             await self._read_hello()
+            log.info("browser bridge: hello consumed, playing opening")
             await self._play_opening()
+            log.info("browser bridge: opening done, entering listen loop")
 
             # 2) Turn loop.
             while not self._stopped:
                 message = await self._ws.receive()
                 if message.get("type") == "websocket.disconnect":
+                    exit_reason = f"disconnect code={message.get('code')}"
                     break
                 data = message.get("bytes")
                 if data is not None:
+                    mic_frames += 1
+                    if mic_frames == 1:
+                        log.info("browser bridge: first mic frame received")
                     await self._on_pcm_frame(data)
                     continue
                 text = message.get("text")
                 if text is not None:
                     # Forward-compat: ignore unknown control frames.
                     continue
+            else:
+                exit_reason = "stopped (terminal)"
         finally:
+            log.info(
+                "browser bridge: run() exiting",
+                extra={"reason": exit_reason, "mic_frames": mic_frames},
+            )
             await self._agent.handle_hangup()
 
     async def _read_hello(self) -> None:
@@ -158,6 +172,12 @@ class BrowserVoiceBridge:
         agent_text = outcome.response.response_text
         if agent_text:
             await self._send_json({"type": "transcript", "role": "agent", "text": agent_text})
+        # Surface a real failure (provider outage / unparseable LLM output) to the
+        # dev console instead of leaving the user staring at silence. Routine
+        # empty-STT turns are not errors.
+        err = outcome.response.parse_error or ""
+        if err and err != "empty STT":
+            await self._send_json({"type": "error", "message": err})
         await self._emit_state()
 
         if getattr(self._agent.state, "is_terminal", False):

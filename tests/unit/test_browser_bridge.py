@@ -251,3 +251,38 @@ async def test_subframe_chunks_do_not_endpoint_too_early():
     bridge = BrowserVoiceBridge(websocket=ws, agent=agent, vad=vad, config=BrowserBridgeConfig())
     await bridge.run()
     assert len(agent.turns) == 0   # silence below threshold => no premature dispatch
+
+
+@pytest.mark.asyncio
+async def test_bridge_emits_error_event_on_turn_error():
+    """A failed turn (provider outage) should surface an 'error' event to the
+    console rather than silently dropping the turn."""
+    vad = EnergyVAD(sample_rate=16000, frame_ms=30)
+    incoming = [{"type": "websocket.receive", "text": json.dumps({"type": "hello"})}]
+    for _ in range(10):
+        incoming.append({"type": "websocket.receive", "bytes": _loud_frame(vad)})
+    for _ in range(25):
+        incoming.append({"type": "websocket.receive", "bytes": _silent_frame(vad)})
+    ws = FakeWebSocket(incoming)
+
+    class ErroringAgent(FakeAgent):
+        async def handle_turn(self, captured, sink):
+            self.turns.append(captured)
+            return TurnOutcome(
+                response=VoiceBotResponse(
+                    response_text="", action="continue",
+                    parse_error="pipeline error: RuntimeError: boom",
+                ),
+                pipeline=TurnResult(
+                    user_text="", user_language=None, user_confidence=0.0,
+                    agent_text="", audio_bytes_sent=0, metrics=TurnMetrics(),
+                ),
+            )
+
+    agent = ErroringAgent()
+    bridge = BrowserVoiceBridge(websocket=ws, agent=agent, vad=vad, config=BrowserBridgeConfig())
+    await bridge.run()
+
+    events = [json.loads(t) for t in ws.sent_text]
+    assert any(e.get("type") == "error" and "pipeline error" in e.get("message", "") for e in events)
+    assert agent.hung_up is True  # call still completed cleanly

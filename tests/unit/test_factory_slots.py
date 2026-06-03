@@ -32,3 +32,21 @@ def test_browser_factory_passes_slots_into_agent() -> None:
     bridge = factory(websocket=object(), tenant=tenant)
     # The agent's slot filler must hold the campaign's schema, not an empty one.
     assert bridge._agent.slots.schema is slots
+
+
+def test_browser_factory_threads_lead_name_from_query() -> None:
+    slots = SlotSchema()
+    providers = SimpleNamespace(
+        get_stt=lambda t: Mock(), get_llm=lambda t: Mock(), get_tts=lambda t: Mock(),
+    )
+    pipeline = SimpleNamespace(
+        stt=SimpleNamespace(language="hi-IN"),
+        llm=SimpleNamespace(temperature=0.5, max_tokens=256, response_format="json"),
+        tts=SimpleNamespace(language="hi-IN", voice_id=None),
+    )
+    tenant = SimpleNamespace(slug="dev", id="t1", settings=SimpleNamespace(pipeline=pipeline))
+    ws = SimpleNamespace(query_params={"lead_name": "Raju"})
+    factory = make_browser_bridge_factory(providers, slots=slots)
+    bridge = factory(websocket=ws, tenant=tenant)
+    # The page-supplied lead name reaches the agent session (for the opening + prompt).
+    assert bridge._agent.session.lead_data.get("lead_name") == "Raju"

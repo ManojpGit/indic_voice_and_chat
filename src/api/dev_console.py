@@ -121,8 +121,14 @@ def make_browser_bridge_factory(
         )
         engine = PipelineEngine(stt, llm, tts, pipeline_cfg)
         session_id = f"web_{uuid.uuid4().hex[:12]}"
+        # The dev console has no CRM lead, so let the page supply a test lead
+        # name via the WS query string (?lead_name=...). This feeds the spoken
+        # opening, the rendered opening in the prompt, and "Known lead data".
+        query_params = getattr(websocket, "query_params", {}) or {}
+        lead_name = (query_params.get("lead_name") or "").strip()
+        lead_data = {"lead_name": lead_name, "name": lead_name} if lead_name else {}
         agent = VoiceBotAgent(
-            session=AgentSession(session_id=session_id),
+            session=AgentSession(session_id=session_id, lead_data=lead_data),
             state_machine=AgentStateMachine(),
             slot_schema=slots,
             script=script,
