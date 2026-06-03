@@ -241,12 +241,43 @@ class PipelineEngine:
                 metrics=metrics,
             )
 
-        # Build the messages list for the LLM.
-        messages = list(history) + [
-            LLMMessage(role="user", content=stt_result.text)
-        ]
+        # STT done — hand the transcript to the shared LLM->TTS path.
+        return await self.run_turn_text(
+            stt_result.text,
+            history,
+            audio_sink,
+            cancel_event,
+            user_language=stt_result.language,
+            user_confidence=stt_result.confidence,
+            stt_latency_ms=metrics.stt_latency_ms,
+            t_overall=t_overall,
+        )
 
-        # --- LLM streaming + TTS streaming (overlapped) ------------------
+    async def run_turn_text(
+        self,
+        user_text: str,
+        history: list[LLMMessage],
+        audio_sink: AudioSink,
+        cancel_event: Optional[asyncio.Event] = None,
+        *,
+        user_language: Optional[str] = None,
+        user_confidence: float = 1.0,
+        stt_latency_ms: int = 0,
+        t_overall: Optional[float] = None,
+    ) -> TurnResult:
+        """LLM->TTS for an already-transcribed user turn (no STT).
+
+        Used by the streaming-STT path: Deepgram has already produced the
+        transcript, so we skip STT entirely and run the LLM/TTS overlap.
+        """
+        cancel_event = cancel_event or asyncio.Event()
+        if t_overall is None:
+            t_overall = time.perf_counter()
+        metrics = TurnMetrics()
+        metrics.stt_latency_ms = stt_latency_ms
+
+        messages = list(history) + [LLMMessage(role="user", content=user_text)]
+
         detector = SentenceDetector()
         full_text_parts: list[str] = []
         sentences_spoken: list[str] = []
@@ -255,12 +286,9 @@ class PipelineEngine:
         first_audio_at: Optional[float] = None
 
         t_llm_start = time.perf_counter()
-
-        # Queue of completed sentences awaiting TTS.
         sentence_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
 
         async def tts_worker() -> None:
-            """Drain sentence_queue, synthesize each, push audio to sink."""
             nonlocal first_audio_at, bytes_sent
             while True:
                 sentence = await sentence_queue.get()
@@ -270,9 +298,7 @@ class PipelineEngine:
                     continue
                 try:
                     result = await self._tts.synthesize(sentence, self._config.tts)
-                except Exception:
-                    # TTS failures shouldn't kill the turn; log via raise
-                    # in the caller. Best-effort: swallow and move on.
+                except Exception:  # noqa: BLE001
                     continue
                 if cancel_event.is_set():
                     continue
@@ -284,10 +310,6 @@ class PipelineEngine:
 
         tts_task = asyncio.create_task(tts_worker())
 
-        # In JSON mode the stream is a structured envelope, not speech: pull the
-        # response_text value out incrementally so TTS starts on the first
-        # sentence instead of waiting for the whole envelope. Plain-text mode
-        # streams tokens straight through.
         is_json = getattr(self._config.llm, "response_format", None) == "json"
         extractor = _SpokenTextExtractor() if is_json else None
         spoke_anything = False
@@ -305,12 +327,11 @@ class PipelineEngine:
                     for sentence in detector.feed(speakable):
                         await sentence_queue.put(sentence)
 
-            # Flush the tail. Only speak it if cancellation hasn't fired.
             if not cancel_event.is_set():
-                # Fallback: unexpected JSON shape (no response_text streamed) —
-                # recover it from the full buffered output.
                 if is_json and not spoke_anything:
-                    for sentence in detector.feed(_speakable_from_json("".join(full_text_parts))):
+                    for sentence in detector.feed(
+                        _speakable_from_json("".join(full_text_parts))
+                    ):
                         await sentence_queue.put(sentence)
                 for sentence in detector.flush():
                     await sentence_queue.put(sentence)
@@ -327,9 +348,9 @@ class PipelineEngine:
         metrics.total_latency_ms = int((time.perf_counter() - t_overall) * 1000)
 
         return TurnResult(
-            user_text=stt_result.text,
-            user_language=stt_result.language,
-            user_confidence=stt_result.confidence,
+            user_text=user_text,
+            user_language=user_language,
+            user_confidence=user_confidence,
             agent_text="".join(full_text_parts),
             audio_bytes_sent=bytes_sent,
             metrics=metrics,
