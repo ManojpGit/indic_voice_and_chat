@@ -159,9 +159,14 @@ class VoiceBotAgent(BaseAgent):
                 ),
             )
 
-        # Empty STT — no real user turn happened. Walk the state machine
-        # back to LISTENING (PROCESSING -> RESPONDING -> LISTENING) and let
-        # the silence handler decide what to do next.
+        return await self._finish_turn(pipeline_result)
+
+    async def _finish_turn(self, pipeline_result: TurnResult) -> TurnOutcome:
+        """Record turns, parse the structured response, apply slots, and advance
+        the state machine. Shared by handle_turn (batch STT) and
+        handle_turn_text (streaming STT)."""
+        # Empty STT — no real user turn happened. Walk the state machine back to
+        # LISTENING and let the silence handler decide what to do next.
         if not pipeline_result.user_text:
             await self.state.fire(Event.LLM_RESPONSE_READY)
             await self.state.fire(Event.RESPONSE_DELIVERED)
@@ -172,18 +177,16 @@ class VoiceBotAgent(BaseAgent):
                 pipeline=pipeline_result,
             )
 
-        # Now we have user text — record it, advance the state machine.
-        self.session.turns.append(LLMMessage(role="user", content=pipeline_result.user_text))
+        self.session.turns.append(
+            LLMMessage(role="user", content=pipeline_result.user_text)
+        )
         await self.persist_turn("user", pipeline_result.user_text)
 
         await self.state.fire(Event.LLM_RESPONSE_READY)
 
-        # Parse structured response, apply slots.
         response = parse_voicebot_response(pipeline_result.agent_text)
         applied = self.slots.apply_updates(response.updated_slots)
 
-        # The assistant's textual reply is what was actually spoken
-        # (response.response_text is what the model intended to say).
         self.session.turns.append(
             LLMMessage(role="assistant", content=response.response_text)
         )
@@ -201,18 +204,56 @@ class VoiceBotAgent(BaseAgent):
         if response.sentiment:
             self.session.sentiment_history.append(response.sentiment)
 
-        # Decide what state to go to next based on the LLM's action.
         if response.action in _ESCALATION_ACTIONS:
             await self.state.fire(Event.ESCALATION_REQUESTED)
         elif response.action in _END_ACTIONS:
-            # Treat 'end' as a hangup-like terminal event from RESPONDING.
-            await self.state.fire(Event.RESPONSE_DELIVERED)  # land in LISTENING
-            await self.state.fire(Event.HANGUP)              # then terminate
+            await self.state.fire(Event.RESPONSE_DELIVERED)
+            await self.state.fire(Event.HANGUP)
         else:
             await self.state.fire(Event.RESPONSE_DELIVERED)
 
         await self.persist_state(extra={"last_action": response.action})
         return TurnOutcome(response=response, pipeline=pipeline_result)
+
+    async def handle_turn_text(self, user_text: str, audio_sink: AudioSink) -> TurnOutcome:
+        """Drive one turn from an already-transcribed utterance (streaming STT).
+
+        Mirrors handle_turn but skips STT: the transcript is supplied directly.
+        """
+        if self.state.state is not State.LISTENING:
+            raise RuntimeError(
+                f"handle_turn_text called from {self.state.state.value}, expected listening"
+            )
+
+        await self.state.fire(Event.UTTERANCE_COMPLETE)
+
+        try:
+            pipeline_result = await self._engine.run_turn_text(
+                user_text,
+                self.session.turns,
+                audio_sink,
+            )
+        except Exception as exc:  # noqa: BLE001 - a provider failure must not drop the call
+            log.exception("pipeline turn (text) failed; recovering to LISTENING")
+            await self.state.fire(Event.LLM_RESPONSE_READY)
+            await self.state.fire(Event.RESPONSE_DELIVERED)
+            return TurnOutcome(
+                response=VoiceBotResponse(
+                    response_text="",
+                    action="continue",
+                    parse_error=f"pipeline error: {type(exc).__name__}: {exc}",
+                ),
+                pipeline=TurnResult(
+                    user_text="",
+                    user_language=None,
+                    user_confidence=0.0,
+                    agent_text="",
+                    audio_bytes_sent=0,
+                    metrics=TurnMetrics(),
+                ),
+            )
+
+        return await self._finish_turn(pipeline_result)
 
     async def handle_silence_timeout(self, audio_sink: AudioSink) -> Optional[TurnOutcome]:
         """User went silent in LISTENING — re-prompt or end the call.
