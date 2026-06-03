@@ -45,7 +45,14 @@ class BrowserBridgeConfig:
 class BrowserVoiceBridge:
     """One bridge per browser connection. Drive with ``run()``."""
 
-    def __init__(self, websocket, agent, vad: VADDetector, config: BrowserBridgeConfig | None = None):
+    def __init__(
+        self,
+        websocket,
+        agent,
+        vad: VADDetector,
+        config: BrowserBridgeConfig | None = None,
+        stream_provider=None,
+    ):
         self._ws = websocket
         self._agent = agent
         self._vad = vad
@@ -62,6 +69,9 @@ class BrowserVoiceBridge:
         # mirroring its gapless scheduling. Used to avoid closing the socket
         # (which tears down playback) before the final line has been heard.
         self._play_until = 0.0
+        self._stream_provider = stream_provider
+        self._stream_session = None
+        self._agent_busy = False
 
     # --- outbound helpers ---------------------------------------------
 
@@ -89,6 +99,7 @@ class BrowserVoiceBridge:
 
     async def run(self) -> None:
         """Drive the connection until the browser disconnects or the agent ends."""
+        stream_task = None
         await self._agent.start()
         mic_frames = 0
         exit_reason = "loop-end"
@@ -101,6 +112,20 @@ class BrowserVoiceBridge:
             log.info("browser bridge: opening done, entering listen loop")
 
             # 2) Turn loop.
+            if self._stream_provider is not None:
+                try:
+                    from src.interfaces.stt import STTConfig
+                    self._stream_session = await self._stream_provider.open_stream(
+                        STTConfig(language="hi", sample_rate=self._config.pcm_sample_rate)
+                    )
+                    stream_task = asyncio.create_task(
+                        self._consume_stream_events(self._stream_session)
+                    )
+                    log.info("browser bridge: deepgram streaming session open")
+                except Exception as e:  # noqa: BLE001 - fall back to batch
+                    log.warning("streaming STT open failed (%s); using batch VAD", e)
+                    self._stream_provider = None
+
             while not self._stopped:
                 message = await self._ws.receive()
                 if message.get("type") == "websocket.disconnect":
@@ -124,6 +149,13 @@ class BrowserVoiceBridge:
                 "browser bridge: run() exiting",
                 extra={"reason": exit_reason, "mic_frames": mic_frames},
             )
+            if stream_task is not None:
+                stream_task.cancel()
+            if self._stream_session is not None:
+                try:
+                    await self._stream_session.aclose()
+                except Exception:  # noqa: BLE001
+                    pass
             await self._agent.handle_hangup()
 
     async def _read_hello(self) -> None:
@@ -161,8 +193,20 @@ class BrowserVoiceBridge:
     # --- inbound ------------------------------------------------------
 
     async def _on_pcm_frame(self, pcm16: bytes) -> None:
-        # Accumulate raw bytes, then process exactly one VAD frame at a time so
-        # endpoint timing matches frame_ms regardless of the browser's quantum.
+        # Streaming mode: forward user-only audio to Deepgram. The client mutes
+        # the mic while the agent speaks; the _agent_busy gate is belt-and-braces
+        # so the agent's own audio is never streamed to the recognizer.
+        if self._stream_session is not None:
+            if self._agent_busy:
+                return
+            try:
+                await self._stream_session.send(pcm16)
+            except Exception:  # noqa: BLE001 - drop to batch on socket failure
+                log.warning("deepgram send failed; switching to batch VAD")
+                self._stream_session = None
+            return
+
+        # Batch mode (unchanged): accumulate + local VAD endpointing.
         self._inbound.extend(pcm16)
         while not self._stopped and len(self._inbound) >= self._frame_bytes:
             frame = bytes(self._inbound[: self._frame_bytes])
@@ -217,6 +261,60 @@ class BrowserVoiceBridge:
                 await asyncio.sleep(remaining + 0.5)
             return
         self._reset_capture()  # drop audio captured while the agent was busy
+        await self._send_json({"type": "status", "status": "listening"})
+
+    async def _consume_stream_events(self, session) -> None:
+        """Drain streaming-STT events: partials -> console, endpoint -> dispatch."""
+        async for ev in session.events():
+            if self._stopped:
+                return
+            if ev.type == "interim":
+                await self._send_json(
+                    {"type": "partial", "role": "user", "text": ev.text}
+                )
+            elif ev.type == "endpoint":
+                if self._agent_busy or not ev.text.strip():
+                    continue
+                await self._dispatch_text_turn(ev.text)
+
+    async def _dispatch_text_turn(self, text: str) -> None:
+        """Run one turn from an already-transcribed utterance (streaming path)."""
+        self._agent_busy = True
+        await self._send_json({"type": "status", "status": "thinking"})
+        await self._send_json({"type": "partial", "role": "user", "text": ""})
+        outcome = await self._agent.handle_turn_text(text, self._send_pcm)
+
+        m = outcome.pipeline.metrics
+        log.info(
+            "browser turn (stream)",
+            extra={
+                "user_text": (outcome.pipeline.user_text or "")[:80],
+                "llm_ttft_ms": m.llm_ttft_ms,
+                "llm_total_ms": m.llm_total_ms,
+                "tts_first_ms": m.tts_first_chunk_ms,
+                "total_ms": m.total_latency_ms,
+                "action": outcome.response.action,
+                "agent_text": (outcome.response.response_text or "")[:100],
+                "error": outcome.response.parse_error or "",
+            },
+        )
+        if text:
+            await self._send_json({"type": "transcript", "role": "user", "text": text})
+        agent_text = outcome.response.response_text
+        if agent_text:
+            await self._send_json({"type": "transcript", "role": "agent", "text": agent_text})
+        err = outcome.response.parse_error or ""
+        if err and err != "empty STT":
+            await self._send_json({"type": "error", "message": err})
+        await self._emit_state()
+
+        if getattr(self._agent.state, "is_terminal", False):
+            self._stopped = True
+            remaining = self._play_until - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(remaining + 0.5)
+            return
+        self._agent_busy = False
         await self._send_json({"type": "status", "status": "listening"})
 
     def _reset_capture(self) -> None:
