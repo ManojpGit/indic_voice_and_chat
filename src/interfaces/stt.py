@@ -40,3 +40,39 @@ class ISTTProvider(ABC):
     @abstractmethod
     def get_supported_languages(self) -> list[str]:
         """Return list of supported language codes."""
+
+
+@dataclass
+class STTStreamEvent:
+    """One event from a live STT session.
+
+    type:
+        "interim"  - a partial, non-final transcript (may change)
+        "final"    - a finalized transcript segment (won't change)
+        "endpoint" - end of utterance; ``text`` is the full utterance transcript
+    """
+
+    type: str
+    text: str
+    confidence: float = 1.0
+    language: Optional[str] = None
+
+
+class ISTTStreamSession(ABC):
+    @abstractmethod
+    async def send(self, pcm16: bytes) -> None:
+        """Feed one chunk of raw PCM16-LE mono audio to the recognizer."""
+
+    @abstractmethod
+    def events(self) -> AsyncIterator[STTStreamEvent]:
+        """Yield recognizer events until the session is closed."""
+
+    @abstractmethod
+    async def aclose(self) -> None:
+        """Flush, close the upstream connection, and cancel background tasks."""
+
+
+class IStreamingSTTProvider(ABC):
+    @abstractmethod
+    async def open_stream(self, config: STTConfig) -> ISTTStreamSession:
+        """Open a live streaming session for one utterance stream."""
