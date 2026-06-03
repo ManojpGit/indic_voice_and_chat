@@ -177,12 +177,17 @@ class BrowserVoiceBridge:
         await self._send_json({"type": "status", "status": "thinking"})
         outcome = await self._agent.handle_turn(captured, self._send_pcm)
 
+        m = outcome.pipeline.metrics
         log.info(
             "browser turn",
             extra={
                 "captured_bytes": len(captured),
-                "user_text": (outcome.pipeline.user_text or "")[:120],
-                "agent_text": (outcome.response.response_text or "")[:120],
+                "user_text": (outcome.pipeline.user_text or "")[:80],
+                "stt_ms": m.stt_latency_ms,
+                "llm_ttft_ms": m.llm_ttft_ms,
+                "llm_total_ms": m.llm_total_ms,
+                "tts_first_ms": m.tts_first_chunk_ms,
+                "total_ms": m.total_latency_ms,
                 "error": outcome.response.parse_error or "",
             },
         )
