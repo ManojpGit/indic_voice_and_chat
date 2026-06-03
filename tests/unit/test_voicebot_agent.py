@@ -53,6 +53,17 @@ class _FakeLLM(ILLMProvider):
         yield self._json[mid:]
 
 
+class _RaisingLLM(ILLMProvider):
+    """LLM whose stream blows up — simulates a provider outage (e.g. a 404)."""
+
+    async def generate(self, messages, config):
+        raise RuntimeError("LLM down")
+
+    async def generate_stream(self, messages, config):
+        raise RuntimeError("LLM 404: model retired")
+        yield  # pragma: no cover - unreachable, makes this an async generator
+
+
 class _FakeTTS(ITTSProvider):
     def __init__(self) -> None:
         self.synthesized: list[str] = []
@@ -254,3 +265,27 @@ async def test_session_store_persists_turns(fake_redis) -> None:
 
 async def _drop_sink(b: bytes) -> None:
     pass
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_recovers_from_pipeline_error() -> None:
+    """A provider failure mid-turn must NOT propagate (which would drop the
+    call). The agent recovers to LISTENING and reports the error."""
+    stt = _FakeSTT(text="haan ji ek minute hai")
+    engine = PipelineEngine(
+        stt, _RaisingLLM(), _FakeTTS(),
+        PipelineConfig(stt=STTConfig(), llm=LLMConfig(), tts=TTSConfig()),
+    )
+    agent = _make_agent(engine)
+    await agent.start()
+
+    outcome = await agent.handle_turn(b"\x00\x00", _drop_sink)
+
+    # Did not raise; call survives and is ready for the next turn.
+    assert agent.state.state is State.LISTENING
+    assert outcome.response.response_text == ""
+    assert outcome.response.parse_error and "error" in outcome.response.parse_error.lower()
+
+    # A second failing turn also recovers (the call keeps going).
+    await agent.handle_turn(b"\x00\x00", _drop_sink)
+    assert agent.state.state is State.LISTENING

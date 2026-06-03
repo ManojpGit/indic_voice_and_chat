@@ -22,7 +22,7 @@ from src.dialogue.prompts import VoiceBotScript, build_voicebot_system_prompt
 from src.dialogue.response_parser import VoiceBotResponse, parse_voicebot_response
 from src.dialogue.slots import SlotFiller, SlotSchema
 from src.interfaces.llm import LLMMessage
-from src.pipeline.engine import AudioSink, PipelineEngine, TurnResult
+from src.pipeline.engine import AudioSink, PipelineEngine, TurnMetrics, TurnResult
 
 
 log = logging.getLogger(__name__)
@@ -130,11 +130,34 @@ class VoiceBotAgent(BaseAgent):
         # Utterance complete (the telephony layer determined this via VAD).
         await self.state.fire(Event.UTTERANCE_COMPLETE)
 
-        pipeline_result = await self._engine.run_turn(
-            captured_audio=captured_audio,
-            history=self.session.turns,
-            audio_sink=audio_sink,
-        )
+        try:
+            pipeline_result = await self._engine.run_turn(
+                captured_audio=captured_audio,
+                history=self.session.turns,
+                audio_sink=audio_sink,
+            )
+        except Exception as exc:  # noqa: BLE001 - a provider failure must not drop the call
+            # STT/LLM/TTS outage (e.g. a retired model 404). Walk the state
+            # machine back to LISTENING (PROCESSING -> RESPONDING -> LISTENING)
+            # so the conversation survives instead of crashing the call.
+            log.exception("pipeline turn failed; recovering to LISTENING")
+            await self.state.fire(Event.LLM_RESPONSE_READY)
+            await self.state.fire(Event.RESPONSE_DELIVERED)
+            return TurnOutcome(
+                response=VoiceBotResponse(
+                    response_text="",
+                    action="continue",
+                    parse_error=f"pipeline error: {type(exc).__name__}: {exc}",
+                ),
+                pipeline=TurnResult(
+                    user_text="",
+                    user_language=None,
+                    user_confidence=0.0,
+                    agent_text="",
+                    audio_bytes_sent=0,
+                    metrics=TurnMetrics(),
+                ),
+            )
 
         # Empty STT — no real user turn happened. Walk the state machine
         # back to LISTENING (PROCESSING -> RESPONDING -> LISTENING) and let
