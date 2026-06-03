@@ -15,6 +15,7 @@ from src.interfaces.stt import ISTTProvider
 from src.interfaces.telephony import ITelephonyProvider
 from src.interfaces.tts import ITTSProvider
 from src.interfaces.vector_store import IVectorStore
+from src.providers.llm.anthropic_claude import AnthropicClaudeAdapter
 from src.providers.llm.gemini import GeminiLLMAdapter
 from src.providers.llm.groq import GroqLLMAdapter
 from src.providers.stt.groq_whisper import GroqSTTAdapter
@@ -35,6 +36,8 @@ STT_PROVIDERS: dict[str, type[ISTTProvider]] = {
 LLM_PROVIDERS: dict[str, type[ILLMProvider]] = {
     "groq": GroqLLMAdapter,
     "gemini": GeminiLLMAdapter,
+    "anthropic": AnthropicClaudeAdapter,
+    "claude": AnthropicClaudeAdapter,
 }
 
 TTS_PROVIDERS: dict[str, type[ITTSProvider]] = {

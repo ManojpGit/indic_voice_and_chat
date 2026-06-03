@@ -35,8 +35,7 @@ pipeline:
     provider: gemini
     # gemini-2.5-flash is the sweet spot: good dialogue quality with the best
     # latency of the capable models (flash-lite was faster but low quality;
-    # 3.5-flash was higher quality but slower). Lower latency further via
-    # prompt caching rather than a different model.
+    # 3.5-flash was higher quality but slower).
     model: gemini-2.5-flash
     temperature: 0.5
     # The JSON response envelope (response_text + slots + metadata, in Hindi)
@@ -44,6 +43,14 @@ pipeline:
     max_tokens: 1024
     response_format: json
     api_key_env: TENANT_DEV_GEMINI_KEY
+    # --- Claude alternative (swap back to compare): Haiku 4.5, fast/cheap tier.
+    #     Adapter forces the JSON envelope via a '{' assistant prefill.
+    # provider: anthropic
+    # model: claude-haiku-4-5
+    # temperature: 0.5
+    # max_tokens: 1024
+    # response_format: json
+    # api_key_env: TENANT_DEV_ANTHROPIC_KEY
 
   tts:
     provider: sarvam
