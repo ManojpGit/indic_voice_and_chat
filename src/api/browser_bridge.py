@@ -188,6 +188,8 @@ class BrowserVoiceBridge:
                 "llm_total_ms": m.llm_total_ms,
                 "tts_first_ms": m.tts_first_chunk_ms,
                 "total_ms": m.total_latency_ms,
+                "action": outcome.response.action,
+                "agent_text": (outcome.response.response_text or "")[:100],
                 "error": outcome.response.parse_error or "",
             },
         )
