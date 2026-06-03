@@ -58,6 +58,23 @@ function addTranscript(role, text) {
   $("transcript").scrollTop = $("transcript").scrollHeight;
 }
 
+let _partialEl = null;
+function renderPartial(text) {
+  if (!text) {
+    if (_partialEl) { _partialEl.remove(); _partialEl = null; }
+    return;
+  }
+  if (!_partialEl) {
+    _partialEl = document.createElement("div");
+    _partialEl.className = "turn user";
+    _partialEl.style.opacity = "0.55";
+    _partialEl.style.fontStyle = "italic";
+    $("transcript").appendChild(_partialEl);
+  }
+  _partialEl.textContent = "🎙 " + text;
+  $("transcript").scrollTop = $("transcript").scrollHeight;
+}
+
 // Downsample Float32 @ctxRate -> Int16 @16k via nearest-neighbour sampling.
 function downsampleToInt16(float32, inRate) {
   if (inRate === TARGET_RATE) {
@@ -165,7 +182,10 @@ async function start() {
       // thinking, or speaking) — not only while audio streams. Otherwise the
       // mic captures noise during those windows and the agent answers itself.
       agentSpeaking = (msg.status !== "listening");
+    } else if (msg.type === "partial") {
+      renderPartial(msg.text);
     } else if (msg.type === "transcript") {
+      if (msg.role === "user") renderPartial("");  // final replaces the live line
       addTranscript(msg.role, msg.text);
     } else if (msg.type === "state") {
       $("state").textContent =
