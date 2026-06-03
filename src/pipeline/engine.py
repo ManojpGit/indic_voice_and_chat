@@ -30,6 +30,8 @@ Design choices:
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
@@ -41,6 +43,37 @@ from src.pipeline.sentence_detector import SentenceDetector
 
 
 AudioSink = Callable[[bytes], Awaitable[None]]
+
+
+def _speakable_from_json(raw: str) -> str:
+    """Extract the spoken text (the ``response_text`` field) from a structured
+    JSON LLM response.
+
+    When the LLM runs in ``response_format=json`` mode it emits an envelope
+    like ``{"response_text": "...", "action": "...", "updated_slots": {...}}``.
+    Only ``response_text`` should be spoken — feeding the raw envelope to TTS
+    makes it read field names ("response_text" -> "response underscore text"),
+    braces, and slot keys aloud. Tolerant of markdown code fences and
+    surrounding prose; returns '' when no ``response_text`` can be recovered.
+    """
+    s = raw.strip()
+    if s.startswith("```"):
+        s = s.strip("`").strip()
+        if s[:4].lower() == "json":
+            s = s[4:].strip()
+    obj = None
+    try:
+        obj = json.loads(s)
+    except Exception:  # noqa: BLE001 - tolerant: fall back to a {...} search
+        match = re.search(r"\{.*\}", s, re.DOTALL)
+        if match:
+            try:
+                obj = json.loads(match.group(0))
+            except Exception:  # noqa: BLE001
+                obj = None
+    if isinstance(obj, dict):
+        return str(obj.get("response_text") or "")
+    return ""
 
 
 @dataclass
@@ -168,6 +201,11 @@ class PipelineEngine:
 
         tts_task = asyncio.create_task(tts_worker())
 
+        # In JSON mode the stream is a structured envelope, not speech: buffer
+        # it and speak only the parsed response_text. In plain-text mode we
+        # stream tokens to TTS sentence-by-sentence for low latency.
+        is_json = getattr(self._config.llm, "response_format", None) == "json"
+
         try:
             async for token in self._llm.generate_stream(messages, self._config.llm):
                 if cancel_event.is_set():
@@ -175,11 +213,16 @@ class PipelineEngine:
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
                 full_text_parts.append(token)
-                for sentence in detector.feed(token):
-                    await sentence_queue.put(sentence)
+                if not is_json:
+                    for sentence in detector.feed(token):
+                        await sentence_queue.put(sentence)
 
             # Flush the LLM tail. Only speak it if cancellation hasn't fired.
             if not cancel_event.is_set():
+                if is_json:
+                    # Speak only response_text, never the raw JSON envelope.
+                    for sentence in detector.feed(_speakable_from_json("".join(full_text_parts))):
+                        await sentence_queue.put(sentence)
                 for sentence in detector.flush():
                     await sentence_queue.put(sentence)
         finally:

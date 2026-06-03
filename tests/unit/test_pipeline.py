@@ -74,10 +74,10 @@ class FakeTTS(ITTSProvider):
         return []
 
 
-def _config() -> PipelineConfig:
+def _config(response_format: str = "json") -> PipelineConfig:
     return PipelineConfig(
         stt=STTConfig(language="en"),
-        llm=LLMConfig(),
+        llm=LLMConfig(response_format=response_format),
         tts=TTSConfig(language="en"),
     )
 
@@ -116,6 +116,40 @@ async def test_run_turn_full_happy_path() -> None:
 
 
 @pytest.mark.asyncio
+async def test_json_mode_speaks_only_response_text() -> None:
+    """In response_format=json mode the LLM streams a structured envelope.
+    TTS must speak only the ``response_text`` value, never the raw JSON
+    (field names like response_text/updated_slots, braces, etc.)."""
+    stt = FakeSTT(text="haan ji", language="hi")
+    envelope = (
+        '{"response_text": "Namaste, kaise ho?", "action": "continue", '
+        '"updated_slots": {"interest_level": "hot"}}'
+    )
+    llm = FakeLLM(tokens=list(envelope))  # stream char-by-char
+    tts = FakeTTS()
+    cfg = PipelineConfig(
+        stt=STTConfig(language="hi"),
+        llm=LLMConfig(response_format="json"),
+        tts=TTSConfig(language="hi"),
+    )
+    engine = PipelineEngine(stt, llm, tts, cfg)
+
+    async def sink(b: bytes) -> None:
+        pass
+
+    result = await engine.run_turn(
+        captured_audio=b"\x00\x00", history=[], audio_sink=sink
+    )
+
+    spoken = " ".join(tts.synthesized)
+    assert "Namaste, kaise ho?" in spoken
+    for forbidden in ("response_text", "updated_slots", "interest_level", "action", "{", "}"):
+        assert forbidden not in spoken, f"spoke JSON token {forbidden!r} in {spoken!r}"
+    # The full raw JSON is still returned for the agent to parse into state.
+    assert result.agent_text == envelope
+
+
+@pytest.mark.asyncio
 async def test_run_turn_does_not_mutate_history() -> None:
     history = [LLMMessage(role="system", content="hello")]
     engine = PipelineEngine(
@@ -148,7 +182,7 @@ async def test_run_turn_streams_per_sentence() -> None:
     stt = FakeSTT(text="hi")
     llm = FakeLLM(tokens=["First. ", "Second sentence. ", "Third one."])
     tts = FakeTTS()
-    engine = PipelineEngine(stt, llm, tts, _config())
+    engine = PipelineEngine(stt, llm, tts, _config("text"))
 
     await engine.run_turn(b"\x00", [], audio_sink=_drop_sink)
 
@@ -168,7 +202,7 @@ async def test_run_turn_cancellation_drops_remaining_audio() -> None:
         delay_per_token=0.05,  # slow enough to cancel mid-stream
     )
     tts = FakeTTS()
-    engine = PipelineEngine(stt, llm, tts, _config())
+    engine = PipelineEngine(stt, llm, tts, _config("text"))
 
     cancel_event = asyncio.Event()
 
