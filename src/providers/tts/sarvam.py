@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from src.interfaces.tts import ITTSProvider, TTSConfig, TTSResult
+from src.pipeline.text_normalize import apply_pronunciations
 
 
 SARVAM_BASE_URL = "https://api.sarvam.ai"
@@ -63,6 +64,8 @@ class SarvamTTSAdapter(ITTSProvider):
         }
 
     async def synthesize(self, text: str, config: TTSConfig) -> TTSResult:
+        # Rewrite English/brand words Sarvam mispronounces into Devanagari.
+        text = apply_pronunciations(text)
         body: dict[str, Any] = {
             "inputs": [text],
             "target_language_code": config.language,

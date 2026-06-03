@@ -1,0 +1,61 @@
+"""Pronunciation fixes for Indic TTS.
+
+Indic TTS (e.g. Sarvam) mispronounces Latin-script English / brand words
+embedded in Hindi text — "WhatsApp" comes out as "ThatsApp", "Casino" as
+"Hasino". Rewriting those words to a Devanagari phonetic spelling before
+synthesis makes the TTS pronounce them correctly.
+
+The map is plain data: edit/extend ``DEFAULT_PRONUNCIATIONS`` or pass
+campaign-specific overrides via ``apply_pronunciations(text, extra=...)``.
+"""
+
+from __future__ import annotations
+
+import re
+
+# English / brand term -> Devanagari phonetic spelling. Matched whole-word and
+# case-insensitively. Keep entries high-confidence; a wrong spelling just trades
+# one mispronunciation for another.
+DEFAULT_PRONUNCIATIONS: dict[str, str] = {
+    "WhatsApp": "व्हाट्सऐप",
+    "Casino": "कसीनो",
+    "Aviator": "एविएटर",
+    "app": "ऐप",
+    "link": "लिंक",
+    "bonus": "बोनस",
+    "cash": "कैश",
+    "commission": "कमीशन",
+    "registration": "रजिस्ट्रेशन",
+    "deposit": "डिपॉज़िट",
+    "withdrawal": "विड्रॉल",
+    "instant": "इंस्टंट",
+    "account": "अकाउंट",
+    "support": "सपोर्ट",
+    "update": "अपडेट",
+    "trusted": "ट्रस्टेड",
+    "safe": "सेफ",
+    "official": "ऑफिशियल",
+    "free": "फ्री",
+    "automatic": "ऑटोमैटिक",
+    "minimum": "मिनिमम",
+}
+
+
+def apply_pronunciations(text: str, extra: dict[str, str] | None = None) -> str:
+    """Rewrite known mispronounced terms to Devanagari so TTS says them right.
+
+    Whole-word, case-insensitive. ``extra`` (e.g. a campaign's own overrides)
+    is merged over the defaults and wins on conflict.
+    """
+    if not text:
+        return text
+    table = {**DEFAULT_PRONUNCIATIONS, **(extra or {})}
+    if not table:
+        return text
+    lower = {k.lower(): v for k, v in table.items()}
+    # Longest keys first so multi-word / longer terms win over their substrings.
+    keys = sorted(table.keys(), key=len, reverse=True)
+    pattern = re.compile(
+        r"\b(" + "|".join(re.escape(k) for k in keys) + r")\b", re.IGNORECASE
+    )
+    return pattern.sub(lambda m: lower[m.group(0).lower()], text)
