@@ -35,7 +35,9 @@ pipeline:
     provider: gemini
     model: gemini-2.5-flash
     temperature: 0.5
-    max_tokens: 256
+    # The JSON response envelope (response_text + slots + metadata, in Hindi)
+    # needs well over 256 tokens; a tight cap truncates it into invalid JSON.
+    max_tokens: 1024
     response_format: json
     api_key_env: TENANT_DEV_GEMINI_KEY
 
