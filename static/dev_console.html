@@ -79,6 +79,7 @@ function downsampleToInt16(float32, inRate) {
 }
 
 // Schedule Int16 PCM @16k for gapless playback.
+let _playN = 0;
 function playPcm16(int16) {
   const buf = audioCtx.createBuffer(1, int16.length, TARGET_RATE);
   const ch = buf.getChannelData(0);
@@ -86,10 +87,16 @@ function playPcm16(int16) {
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
   src.connect(audioCtx.destination);
+  // Free the node when it finishes so a long call doesn't accumulate nodes.
+  src.onended = () => { try { src.disconnect(); } catch (_) {} };
   const now = audioCtx.currentTime;
-  if (playCursor < now) playCursor = now;
+  const underrun = playCursor < now;
+  if (underrun) playCursor = now;
   src.start(playCursor);
   playCursor += buf.duration;
+  if ((++_playN) % 25 === 0) {
+    console.log(`[playback] n=${_playN} ctxRate=${audioCtx.sampleRate} gap=${(playCursor - now).toFixed(2)}s${underrun ? " UNDERRUN" : ""}`);
+  }
 }
 
 const WORKLET_CODE = `
@@ -199,7 +206,16 @@ $("start").onclick = async () => {
   // a denial clearly without opening a doomed connection.
   setStatus("requesting microphone…");
   try {
-    audioCtx = new AudioContext();
+    // Run the context AT 16 kHz so the agent's 16 kHz audio plays with NO
+    // per-chunk resampling (resampling many tiny buffers warbles over time) and
+    // the mic is captured at 16 kHz directly. Fall back if the browser refuses
+    // a forced rate.
+    try {
+      audioCtx = new AudioContext({ sampleRate: TARGET_RATE });
+    } catch (_) {
+      audioCtx = new AudioContext();
+    }
+    console.log("[playback] AudioContext sampleRate =", audioCtx.sampleRate);
     if (audioCtx.state === "suspended") await audioCtx.resume();
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
