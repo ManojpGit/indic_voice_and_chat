@@ -154,8 +154,10 @@ async function start() {
     const msg = JSON.parse(e.data);
     if (msg.type === "status") {
       setStatus(msg.status);
-      if (msg.status === "speaking") agentSpeaking = true;
-      if (msg.status === "listening") agentSpeaking = false;
+      // Mute the mic whenever the agent is busy (synthesizing the opening,
+      // thinking, or speaking) — not only while audio streams. Otherwise the
+      // mic captures noise during those windows and the agent answers itself.
+      agentSpeaking = (msg.status !== "listening");
     } else if (msg.type === "transcript") {
       addTranscript(msg.role, msg.text);
     } else if (msg.type === "state") {

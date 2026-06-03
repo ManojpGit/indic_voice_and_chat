@@ -134,6 +134,7 @@ class BrowserVoiceBridge:
         if opening_text:
             await self._send_json({"type": "transcript", "role": "agent", "text": opening_text})
         await self._emit_state()
+        self._reset_capture()  # drop anything captured during the opening
         await self._send_json({"type": "status", "status": "listening"})
 
     def _latest_assistant_text(self, since: int) -> str:
@@ -192,7 +193,15 @@ class BrowserVoiceBridge:
         if getattr(self._agent.state, "is_terminal", False):
             self._stopped = True
             return
+        self._reset_capture()  # drop audio captured while the agent was busy
         await self._send_json({"type": "status", "status": "listening"})
+
+    def _reset_capture(self) -> None:
+        """Discard any audio buffered while the agent was busy, so the next
+        listen starts clean (no greeting/echo/noise leading into the turn)."""
+        self._capture_buffer.clear()
+        self._inbound.clear()
+        self._endpoint.reset()
 
     async def _emit_state(self) -> None:
         await self._send_json({
