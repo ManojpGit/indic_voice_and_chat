@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from urllib.parse import urlencode
@@ -32,6 +33,8 @@ DEFAULT_MODEL = "nova-2"
 DEFAULT_LANGUAGE = "hi"
 
 Connector = Callable[[str, dict[str, str]], Awaitable[Any]]
+
+log = logging.getLogger(__name__)
 
 
 class DeepgramStreamSession(ISTTStreamSession):
@@ -94,14 +97,18 @@ class DeepgramStreamSession(ISTTStreamSession):
         self._endpointed = endpointed
 
     async def _receiver(self) -> None:
+        reason = "stream ended"
         try:
             async for raw in self._ws:
                 ev = self._handle_raw(raw if isinstance(raw, str) else raw.decode("utf-8"))
                 if ev is not None:
                     await self._queue.put(ev)
-        except Exception:  # noqa: BLE001 - surface as end-of-stream
-            pass
+        except Exception as e:  # noqa: BLE001 - surface as end-of-stream
+            reason = f"{type(e).__name__}: {e}"
         finally:
+            # Only noteworthy if Deepgram dropped us; a normal aclose() sets _closed.
+            if not self._closed:
+                log.warning("deepgram stream ended unexpectedly", extra={"reason": reason})
             await self._queue.put(None)
 
     async def _keepalive(self) -> None:

@@ -264,18 +264,25 @@ class BrowserVoiceBridge:
         await self._send_json({"type": "status", "status": "listening"})
 
     async def _consume_stream_events(self, session) -> None:
-        """Drain streaming-STT events: partials -> console, endpoint -> dispatch."""
-        async for ev in session.events():
-            if self._stopped:
-                return
-            if ev.type == "interim":
-                await self._send_json(
-                    {"type": "partial", "role": "user", "text": ev.text}
-                )
-            elif ev.type == "endpoint":
-                if self._agent_busy or not ev.text.strip():
-                    continue
-                await self._dispatch_text_turn(ev.text)
+        """Drain streaming-STT events: partials -> console, endpoint -> dispatch.
+
+        Wrapped so a consumer crash is logged rather than silently killing the
+        background task (which would wedge the turn loop with no trace).
+        """
+        try:
+            async for ev in session.events():
+                if self._stopped:
+                    return
+                if ev.type == "interim":
+                    await self._send_json(
+                        {"type": "partial", "role": "user", "text": ev.text}
+                    )
+                elif ev.type == "endpoint":
+                    if self._agent_busy or not ev.text.strip():
+                        continue
+                    await self._dispatch_text_turn(ev.text)
+        except Exception:  # noqa: BLE001 - never let the consumer die silently
+            log.exception("stream event consumer crashed")
 
     async def _dispatch_text_turn(self, text: str) -> None:
         """Run one turn from an already-transcribed utterance (streaming path)."""
