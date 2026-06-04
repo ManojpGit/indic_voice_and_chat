@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from src.interfaces.llm import LLMConfig, LLMMessage
@@ -62,3 +64,26 @@ async def test_run_turn_text_skips_stt_and_speaks_response():
     assert '"response_text"' in result.agent_text
     assert sink_calls
     assert "नमस्ते जी।" in "".join(result.sentences_spoken)
+
+
+@pytest.mark.asyncio
+async def test_run_turn_text_cancel_stops_before_audio():
+    engine = _engine()
+    sink_calls = []
+
+    async def sink(audio: bytes):
+        sink_calls.append(audio)
+
+    cancel = asyncio.Event()
+    cancel.set()  # pre-cancelled: the token loop breaks before processing/audio
+
+    result = await engine.run_turn_text(
+        "और कुछ benefits हैं?",
+        history=[],
+        audio_sink=sink,
+        cancel_event=cancel,
+    )
+    assert result.cancelled is True
+    assert sink_calls == []            # no audio synthesized/sent
+    assert result.audio_bytes_sent == 0
+    assert result.sentences_spoken == []
