@@ -48,7 +48,7 @@
 const TARGET_RATE = 16000;
 let ws, audioCtx, micStream, workletNode, playCursor = 0, agentSpeaking = false, running = false;
 
-const BARGE_RMS = 0.02;   // mic energy (post-AEC) to count as user speech — tune live
+const BARGE_RMS = 0.006;  // mic energy (post-AEC) to count as user speech — measured: speech ~0.008-0.012, echo floor <0.005
 const BARGE_MS  = 120;    // sustained speech required before cutting off the agent
 let   bargeMs   = 0;
 const activeSources = new Set();   // scheduled playback nodes, so we can stop them
@@ -168,7 +168,9 @@ async function start() {
           for (let i = 0; i < e.data.length; i++) sum += e.data[i] * e.data[i];
           const rms = Math.sqrt(sum / e.data.length);
           const frameMs = (e.data.length / audioCtx.sampleRate) * 1000;
-          bargeMs = rms > BARGE_RMS ? bargeMs + frameMs : 0;
+          // Decay (not hard-reset) on sub-threshold frames so natural dips
+          // between syllables don't keep restarting the sustained-speech timer.
+          bargeMs = rms > BARGE_RMS ? bargeMs + frameMs : Math.max(0, bargeMs - frameMs);
           if (bargeMs < BARGE_MS) return;          // not enough sustained speech yet
           // Confirmed interruption: stop the agent instantly + tell the server.
           bargeMs = 0;
