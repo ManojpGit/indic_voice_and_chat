@@ -47,6 +47,7 @@
 <script>
 const TARGET_RATE = 16000;
 let ws, audioCtx, micStream, workletNode, playCursor = 0, agentSpeaking = false, running = false;
+let bargeArmed = false;   // server arms barge-in only during a cancellable turn (not the opening)
 
 const BARGE_RMS = 0.006;  // mic energy (post-AEC) to count as user speech — measured: speech ~0.008-0.012, echo floor <0.005
 const BARGE_MS  = 120;    // sustained speech required before cutting off the agent
@@ -161,8 +162,9 @@ async function start() {
         const stillPlaying = playCursor > audioCtx.currentTime + 0.05;
         const speaking = agentSpeaking || stillPlaying;
         if ($("halfDuplex").checked && speaking) {
-          // Agent is speaking. With barge-in off, drop the frame (half-duplex).
-          if (!$("bargeIn").checked) { bargeMs = 0; return; }
+          // Agent is speaking. Only detect interruptions when barge-in is enabled
+          // AND the server has armed it (a cancellable turn — not the opening).
+          if (!$("bargeIn").checked || !bargeArmed) { bargeMs = 0; return; }
           // Barge-in on: VAD the echo-cancelled mic for sustained user speech.
           let sum = 0;
           for (let i = 0; i < e.data.length; i++) sum += e.data[i] * e.data[i];
@@ -211,6 +213,9 @@ async function start() {
       // thinking, or speaking) — not only while audio streams. Otherwise the
       // mic captures noise during those windows and the agent answers itself.
       agentSpeaking = (msg.status !== "listening");
+    } else if (msg.type === "barge") {
+      bargeArmed = !!msg.armed;   // only allow interruptions during a cancellable turn
+      if (!bargeArmed) bargeMs = 0;
     } else if (msg.type === "partial") {
       renderPartial(msg.text);
     } else if (msg.type === "transcript") {

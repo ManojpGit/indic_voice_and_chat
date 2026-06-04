@@ -295,6 +295,10 @@ class BrowserVoiceBridge:
         self._agent_busy = True
         self._cancel_event = asyncio.Event()
         await self._send_json({"type": "status", "status": "thinking"})
+        # Arm browser barge-in only now that a cancellable turn is in progress
+        # (not during the opening — that lets the agent's greeting play fully and
+        # gives the browser echo-canceller time to converge before the first turn).
+        await self._send_json({"type": "barge", "armed": True})
         await self._send_json({"type": "partial", "role": "user", "text": ""})
         try:
             outcome = await self._agent.handle_turn_text(
@@ -309,6 +313,7 @@ class BrowserVoiceBridge:
         if outcome.pipeline.cancelled:
             await self._emit_state()
             self._agent_busy = False
+            await self._send_json({"type": "barge", "armed": False})
             await self._send_json({"type": "status", "status": "listening"})
             return
 
@@ -343,6 +348,7 @@ class BrowserVoiceBridge:
                 await asyncio.sleep(remaining + 0.5)
             return
         self._agent_busy = False
+        await self._send_json({"type": "barge", "armed": False})
         await self._send_json({"type": "status", "status": "listening"})
 
     def _handle_barge_in(self) -> None:

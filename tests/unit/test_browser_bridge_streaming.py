@@ -187,3 +187,14 @@ async def test_cancelled_turn_skips_agent_transcript():
     assert agent_msgs == []  # abandoned reply not emitted
     statuses = [m["status"] for m in bridge._ws.sent_json if m.get("type") == "status"]
     assert statuses[-1] == "listening"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_arms_then_disarms_barge():
+    # A normal turn should arm barge-in at the start and disarm at the end, so
+    # the browser only allows interruptions during a cancellable turn.
+    bridge, session = _bridge([])
+    await bridge._dispatch_text_turn("hi")
+    barge = [m for m in bridge._ws.sent_json if m.get("type") == "barge"]
+    assert barge[0] == {"type": "barge", "armed": True}
+    assert barge[-1] == {"type": "barge", "armed": False}
