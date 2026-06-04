@@ -42,7 +42,8 @@ Barge-in is **built, reviewed, working, and the working tree is CLEAN** (DIAG st
 
 ## Git state
 
-- **Local `main` HEAD:** `7ea8d18` (barge-in tuning) → preceded by `41158ea` (this handoff doc) and `6bc0ce4` (deepgram endpoint fix).
+- **Local `main` HEAD:** `5132cb7` (server-arms barge-in only during a cancellable turn — fixes the greeting self-cutoff: on speakers the VAD fired on the opening greeting's echo and `stopPlayback()` cut it; server now sends `{type:barge,armed:true/false}` and the browser only detects while armed). Preceded by `7ea8d18` (VAD tuning), `8dc0d7e` (handoff update), `6bc0ce4` (deepgram endpoint fix).
+- **Unpushed:** everything after `8dc0d7e` (which was the last push). i.e. `5132cb7` is unpushed.
 - **`origin/main`:** behind — these commits are **NOT pushed yet**: `c630d46` (turn-timeout fix), `931c277` (streaming-STT crash/drop logging), `dceb70a`+`e609a56` (barge-in spec+plan), `cfbae82` `db657e1` `3360de2` `c7e4fe4` (barge-in impl), `6bc0ce4` (deepgram endpoint fix), plus the docs commits from earlier (`3476f51`, `49a6a25` were pushed; verify). **Push after barge-in is finalized** (user has been asked to confirm before pushing).
 - Untracked `.claude/` — never commit.
 
