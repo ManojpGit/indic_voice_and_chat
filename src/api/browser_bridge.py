@@ -72,6 +72,7 @@ class BrowserVoiceBridge:
         self._stream_provider = stream_provider
         self._stream_session = None
         self._agent_busy = False
+        self._cancel_event = None  # set per in-flight streaming turn; barge-in fires it
 
     # --- outbound helpers ---------------------------------------------
 
@@ -140,7 +141,12 @@ class BrowserVoiceBridge:
                     continue
                 text = message.get("text")
                 if text is not None:
-                    # Forward-compat: ignore unknown control frames.
+                    try:
+                        ctrl = json.loads(text)
+                    except (ValueError, TypeError):
+                        ctrl = {}
+                    if ctrl.get("type") == "barge_in":
+                        self._handle_barge_in()
                     continue
             else:
                 exit_reason = "stopped (terminal)"
@@ -287,9 +293,24 @@ class BrowserVoiceBridge:
     async def _dispatch_text_turn(self, text: str) -> None:
         """Run one turn from an already-transcribed utterance (streaming path)."""
         self._agent_busy = True
+        self._cancel_event = asyncio.Event()
         await self._send_json({"type": "status", "status": "thinking"})
         await self._send_json({"type": "partial", "role": "user", "text": ""})
-        outcome = await self._agent.handle_turn_text(text, self._send_pcm)
+        try:
+            outcome = await self._agent.handle_turn_text(
+                text, self._send_pcm, cancel_event=self._cancel_event
+            )
+        finally:
+            self._cancel_event = None
+
+        # Barge-in: the agent's reply was cancelled mid-utterance. Don't emit the
+        # abandoned reply — return to listening; the interruption follows as the
+        # next turn.
+        if outcome.pipeline.cancelled:
+            await self._emit_state()
+            self._agent_busy = False
+            await self._send_json({"type": "status", "status": "listening"})
+            return
 
         m = outcome.pipeline.metrics
         log.info(
@@ -323,6 +344,17 @@ class BrowserVoiceBridge:
             return
         self._agent_busy = False
         await self._send_json({"type": "status", "status": "listening"})
+
+    def _handle_barge_in(self) -> None:
+        """Cancel the in-flight turn so the agent stops mid-utterance. Idempotent;
+        no-op when the agent isn't speaking. Transport-agnostic — a future
+        server-side (telephony) detector can call this same entry point."""
+        if not self._agent_busy:
+            return
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+        self._agent_busy = False
+        log.info("barge-in: cancelling current turn")
 
     def _reset_capture(self) -> None:
         """Discard any audio buffered while the agent was busy, so the next

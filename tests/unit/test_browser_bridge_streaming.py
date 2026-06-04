@@ -57,7 +57,7 @@ class _FakeAgent:
         })()
         self.slots = type("Slots", (), {"values": {}})()
 
-    async def handle_turn_text(self, text, sink):
+    async def handle_turn_text(self, text, sink, cancel_event=None):
         self.text_turns.append(text)
         from src.dialogue.response_parser import VoiceBotResponse
         from src.pipeline.engine import TurnMetrics, TurnResult
@@ -137,3 +137,53 @@ def test_build_streaming_provider_none_when_unconfigured():
         secret=lambda env: None,
     )
     assert _build_stream_provider(tenant) is None
+
+
+@pytest.mark.asyncio
+async def test_handle_barge_in_cancels_when_busy():
+    bridge, session = _bridge([])
+    import asyncio as _a
+    bridge._agent_busy = True
+    bridge._cancel_event = _a.Event()
+    bridge._handle_barge_in()
+    assert bridge._cancel_event.is_set() is True
+    assert bridge._agent_busy is False
+
+
+@pytest.mark.asyncio
+async def test_handle_barge_in_noop_when_idle():
+    bridge, session = _bridge([])
+    import asyncio as _a
+    bridge._agent_busy = False
+    bridge._cancel_event = _a.Event()
+    bridge._handle_barge_in()
+    assert bridge._cancel_event.is_set() is False  # untouched
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_skips_agent_transcript():
+    from src.dialogue.response_parser import VoiceBotResponse
+    from src.pipeline.engine import TurnMetrics, TurnResult
+
+    class _CancelAgent:
+        state = type("S", (), {"state": type("V", (), {"value": "listening"})(), "is_terminal": False})()
+        slots = type("SL", (), {"values": {}})()
+
+        async def handle_turn_text(self, text, sink, cancel_event=None):
+            class _O:
+                response = VoiceBotResponse(response_text="जी हाँ सुन", action="continue", parse_error="barge-in")
+                pipeline = TurnResult("u", "hi", 1.0, "{}", 0, TurnMetrics(), cancelled=True)
+            return _O()
+
+    from src.api.browser_bridge import BrowserVoiceBridge, BrowserBridgeConfig
+    from src.pipeline.vad import EnergyVAD
+    bridge = BrowserVoiceBridge(
+        websocket=_FakeWS(), agent=_CancelAgent(),
+        vad=EnergyVAD(sample_rate=16000, frame_ms=30), config=BrowserBridgeConfig(),
+    )
+    await bridge._dispatch_text_turn("और कुछ?")
+    agent_msgs = [m for m in bridge._ws.sent_json
+                  if m.get("type") == "transcript" and m.get("role") == "agent"]
+    assert agent_msgs == []  # abandoned reply not emitted
+    statuses = [m["status"] for m in bridge._ws.sent_json if m.get("type") == "status"]
+    assert statuses[-1] == "listening"
