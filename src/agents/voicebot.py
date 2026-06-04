@@ -12,6 +12,7 @@ provides.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -39,6 +40,14 @@ class TurnOutcome:
 # Map LLM-emitted ``action`` to the state-machine event that follows.
 _ESCALATION_ACTIONS = {"transfer", "schedule_callback"}
 _END_ACTIONS = {"close_positive", "close_negative", "end"}
+
+# Hard ceiling on one turn's STT+LLM+TTS. Providers have a fat tail (a Gemini
+# stream occasionally stalls; observed an 11s turn live), and an unbounded
+# ``await`` on a hung provider wedges the agent forever (``_agent_busy`` never
+# clears). On timeout we walk the state machine back to LISTENING so the call
+# survives. Set above normal turn latency (~3-7s, outliers ~11s) to avoid
+# false-firing on merely-slow turns.
+TURN_TIMEOUT_S = 20.0
 
 
 class VoiceBotAgent(BaseAgent):
@@ -131,12 +140,15 @@ class VoiceBotAgent(BaseAgent):
         await self.state.fire(Event.UTTERANCE_COMPLETE)
 
         try:
-            pipeline_result = await self._engine.run_turn(
-                captured_audio=captured_audio,
-                history=self.session.turns,
-                audio_sink=audio_sink,
+            pipeline_result = await asyncio.wait_for(
+                self._engine.run_turn(
+                    captured_audio=captured_audio,
+                    history=self.session.turns,
+                    audio_sink=audio_sink,
+                ),
+                timeout=TURN_TIMEOUT_S,
             )
-        except Exception as exc:  # noqa: BLE001 - a provider failure must not drop the call
+        except Exception as exc:  # noqa: BLE001 - a provider failure (incl. timeout) must not drop the call
             # STT/LLM/TTS outage (e.g. a retired model 404). Walk the state
             # machine back to LISTENING (PROCESSING -> RESPONDING -> LISTENING)
             # so the conversation survives instead of crashing the call.
@@ -228,12 +240,15 @@ class VoiceBotAgent(BaseAgent):
         await self.state.fire(Event.UTTERANCE_COMPLETE)
 
         try:
-            pipeline_result = await self._engine.run_turn_text(
-                user_text,
-                self.session.turns,
-                audio_sink,
+            pipeline_result = await asyncio.wait_for(
+                self._engine.run_turn_text(
+                    user_text,
+                    self.session.turns,
+                    audio_sink,
+                ),
+                timeout=TURN_TIMEOUT_S,
             )
-        except Exception as exc:  # noqa: BLE001 - a provider failure must not drop the call
+        except Exception as exc:  # noqa: BLE001 - a provider failure (incl. timeout) must not drop the call
             log.exception("pipeline turn (text) failed; recovering to LISTENING")
             await self.state.fire(Event.LLM_RESPONSE_READY)
             await self.state.fire(Event.RESPONSE_DELIVERED)

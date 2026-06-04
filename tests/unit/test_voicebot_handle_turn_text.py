@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from src.agents.base import AgentSession
@@ -73,3 +75,26 @@ async def test_handle_turn_text_empty_is_noop():
     outcome = await agent.handle_turn_text("", sink)
     assert outcome.response.parse_error == "empty STT"
     assert agent.state.state is State.LISTENING
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_text_recovers_on_provider_hang(monkeypatch):
+    """A hung provider call must not wedge the agent: the per-turn timeout
+    walks the state machine back to LISTENING with a timeout error."""
+    import src.agents.voicebot as vb
+    monkeypatch.setattr(vb, "TURN_TIMEOUT_S", 0.05)
+
+    class _HangingEngine:
+        async def run_turn_text(self, user_text, history, audio_sink, cancel_event=None, **kw):
+            await asyncio.sleep(5)  # never returns within the timeout
+            raise AssertionError("should have timed out")
+
+    agent = _agent(_HangingEngine())
+    await agent.start()
+
+    async def sink(a):
+        pass
+
+    outcome = await agent.handle_turn_text("कुछ", sink)
+    assert agent.state.state is State.LISTENING
+    assert "TimeoutError" in (outcome.response.parse_error or "")
