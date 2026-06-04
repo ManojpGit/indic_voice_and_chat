@@ -227,10 +227,15 @@ class VoiceBotAgent(BaseAgent):
         await self.persist_state(extra={"last_action": response.action})
         return TurnOutcome(response=response, pipeline=pipeline_result)
 
-    async def handle_turn_text(self, user_text: str, audio_sink: AudioSink) -> TurnOutcome:
+    async def handle_turn_text(
+        self, user_text: str, audio_sink: AudioSink, cancel_event=None
+    ) -> TurnOutcome:
         """Drive one turn from an already-transcribed utterance (streaming STT).
 
         Mirrors handle_turn but skips STT: the transcript is supplied directly.
+        An optional ``cancel_event`` (asyncio.Event or similar) is forwarded to
+        the engine so a barge-in from the telephony layer can abort the LLM/TTS
+        pipeline mid-stream.
         """
         if self.state.state is not State.LISTENING:
             raise RuntimeError(
@@ -245,6 +250,7 @@ class VoiceBotAgent(BaseAgent):
                     user_text,
                     self.session.turns,
                     audio_sink,
+                    cancel_event,
                 ),
                 timeout=TURN_TIMEOUT_S,
             )
@@ -266,6 +272,24 @@ class VoiceBotAgent(BaseAgent):
                     audio_bytes_sent=0,
                     metrics=TurnMetrics(),
                 ),
+            )
+
+        if pipeline_result.cancelled:
+            # Barge-in: user interrupted before hearing the reply. Keep the user
+            # turn (it was said and processed); drop the abandoned agent reply;
+            # return to LISTENING. The interruption follows as the next turn.
+            if pipeline_result.user_text:
+                self.session.turns.append(
+                    LLMMessage(role="user", content=pipeline_result.user_text)
+                )
+                await self.persist_turn("user", pipeline_result.user_text)
+            await self.state.fire(Event.LLM_RESPONSE_READY)
+            await self.state.fire(Event.RESPONSE_DELIVERED)
+            return TurnOutcome(
+                response=VoiceBotResponse(
+                    response_text="", action="continue", parse_error="barge-in"
+                ),
+                pipeline=pipeline_result,
             )
 
         return await self._finish_turn(pipeline_result)

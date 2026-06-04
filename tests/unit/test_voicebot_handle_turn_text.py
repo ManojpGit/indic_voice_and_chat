@@ -98,3 +98,52 @@ async def test_handle_turn_text_recovers_on_provider_hang(monkeypatch):
     outcome = await agent.handle_turn_text("कुछ", sink)
     assert agent.state.state is State.LISTENING
     assert "TimeoutError" in (outcome.response.parse_error or "")
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_text_barge_in_drops_agent_reply():
+    """A cancelled (barge-in) turn keeps the user turn but drops the agent
+    reply and returns to LISTENING."""
+    result = TurnResult(
+        user_text="और कुछ benefits हैं?",
+        user_language="hi",
+        user_confidence=1.0,
+        agent_text='{"response_text": "जी हाँ, सुन',  # partial / abandoned
+        audio_bytes_sent=4,
+        metrics=TurnMetrics(),
+        cancelled=True,
+    )
+    engine = _FakeEngine(result)
+    agent = _agent(engine)
+    await agent.start()
+
+    async def sink(a):
+        pass
+
+    outcome = await agent.handle_turn_text("और कुछ benefits हैं?", sink)
+    assert outcome.response.parse_error == "barge-in"
+    assert outcome.response.response_text == ""
+    roles = [t.role for t in agent.session.turns]
+    assert roles[-1] == "user"          # user turn kept, no trailing assistant turn
+    assert agent.state.state is State.LISTENING
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_text_passes_cancel_event_to_engine():
+    captured = {}
+
+    class _CaptureEngine:
+        async def run_turn_text(self, user_text, history, audio_sink, cancel_event=None, **kw):
+            captured["cancel_event"] = cancel_event
+            return TurnResult("u", "hi", 1.0,
+                              '{"response_text": "ok", "action": "continue"}', 0, TurnMetrics())
+
+    agent = _agent(_CaptureEngine())
+    await agent.start()
+    sentinel = object()
+
+    async def sink(a):
+        pass
+
+    await agent.handle_turn_text("hi", sink, cancel_event=sentinel)
+    assert captured["cancel_event"] is sentinel
