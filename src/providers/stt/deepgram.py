@@ -87,6 +87,13 @@ class DeepgramStreamSession(ISTTStreamSession):
             return STTStreamEvent(type="endpoint", text=text, confidence=conf)
         if not transcript:
             return None
+        if self._endpointed:
+            # New speech after the previous endpoint: a fresh utterance has
+            # begun, so clear the stale flag — otherwise this utterance's
+            # UtteranceEnd backup would be suppressed (it would never endpoint
+            # if Deepgram doesn't emit speech_final, e.g. after an audio gap
+            # following a barge-in).
+            self._endpointed = False
         if is_final:
             self._acc.append(transcript)
             return STTStreamEvent(type="final", text=transcript, confidence=conf)

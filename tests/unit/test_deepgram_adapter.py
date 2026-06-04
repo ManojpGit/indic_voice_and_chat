@@ -145,3 +145,14 @@ def test_registry_unknown_provider_raises():
     from src.providers import get_streaming_stt_provider, UnknownProviderError
     with pytest.raises(UnknownProviderError):
         get_streaming_stt_provider({"provider": "nope", "api_key": "x"})
+
+
+def test_new_utterance_clears_stale_endpointed_so_utterance_end_fires():
+    # Regression: after a speech_final turn, a NEW utterance that ends with only
+    # UtteranceEnd (no speech_final — common after a post-barge-in audio gap)
+    # must still endpoint, not be suppressed by the stale flag.
+    s = DeepgramStreamSession(ws=None, start_tasks=False)
+    s._handle_raw(_results("पहला", is_final=True, speech_final=True))  # endpointed=True
+    s._handle_raw(_results("दूसरा", is_final=True))                    # new speech → clears flag
+    ev = s._handle_raw(json.dumps({"type": "UtteranceEnd"}))
+    assert ev is not None and ev.type == "endpoint" and ev.text == "दूसरा"
