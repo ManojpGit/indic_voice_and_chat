@@ -30,6 +30,7 @@
     <button id="start">Start</button>
     <label>Lead name <input id="leadName" value="Raju" placeholder="e.g. Raju" style="width:8rem" /></label>
     <label><input type="checkbox" id="halfDuplex" checked /> Mute mic while agent speaks</label>
+    <label><input type="checkbox" id="bargeIn" checked /> Allow interruptions</label>
     <span id="status">idle</span>
   </div>
   <div class="panes">
@@ -46,6 +47,11 @@
 <script>
 const TARGET_RATE = 16000;
 let ws, audioCtx, micStream, workletNode, playCursor = 0, agentSpeaking = false, running = false;
+
+const BARGE_RMS = 0.02;   // mic energy (post-AEC) to count as user speech — tune live
+const BARGE_MS  = 120;    // sustained speech required before cutting off the agent
+let   bargeMs   = 0;
+const activeSources = new Set();   // scheduled playback nodes, so we can stop them
 
 const $ = (id) => document.getElementById(id);
 const setStatus = (s) => { $("status").textContent = s; };
@@ -105,7 +111,8 @@ function playPcm16(int16) {
   src.buffer = buf;
   src.connect(audioCtx.destination);
   // Free the node when it finishes so a long call doesn't accumulate nodes.
-  src.onended = () => { try { src.disconnect(); } catch (_) {} };
+  src.onended = () => { activeSources.delete(src); try { src.disconnect(); } catch (_) {} };
+  activeSources.add(src);
   const now = audioCtx.currentTime;
   const underrun = playCursor < now;
   if (underrun) playCursor = now;
@@ -114,6 +121,12 @@ function playPcm16(int16) {
   if ((++_playN) % 25 === 0) {
     console.log(`[playback] n=${_playN} ctxRate=${audioCtx.sampleRate} gap=${(playCursor - now).toFixed(2)}s${underrun ? " UNDERRUN" : ""}`);
   }
+}
+
+function stopPlayback() {
+  for (const s of activeSources) { try { s.stop(); s.disconnect(); } catch (_) {} }
+  activeSources.clear();
+  playCursor = audioCtx.currentTime;   // nothing scheduled ahead anymore
 }
 
 const WORKLET_CODE = `
@@ -145,13 +158,27 @@ async function start() {
       workletNode = new AudioWorkletNode(audioCtx, "capture-processor");
       workletNode.port.onmessage = (e) => {
         if (!running) return;
-        // Half-duplex gate: drop mic frames while the agent is speaking OR while
-        // its audio is still scheduled to play (playCursor is ahead of the clock).
-        // The server flips to "listening" as soon as it has *sent* the audio, but
-        // on speakers the audio is still playing — without this the mic captures
-        // the agent's own voice and it talks to itself.
         const stillPlaying = playCursor > audioCtx.currentTime + 0.05;
-        if ($("halfDuplex").checked && (agentSpeaking || stillPlaying)) return;
+        const speaking = agentSpeaking || stillPlaying;
+        if ($("halfDuplex").checked && speaking) {
+          // Agent is speaking. With barge-in off, drop the frame (half-duplex).
+          if (!$("bargeIn").checked) { bargeMs = 0; return; }
+          // Barge-in on: VAD the echo-cancelled mic for sustained user speech.
+          let sum = 0;
+          for (let i = 0; i < e.data.length; i++) sum += e.data[i] * e.data[i];
+          const rms = Math.sqrt(sum / e.data.length);
+          const frameMs = (e.data.length / audioCtx.sampleRate) * 1000;
+          bargeMs = rms > BARGE_RMS ? bargeMs + frameMs : 0;
+          if (bargeMs < BARGE_MS) return;          // not enough sustained speech yet
+          // Confirmed interruption: stop the agent instantly + tell the server.
+          bargeMs = 0;
+          stopPlayback();
+          agentSpeaking = false;
+          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "barge_in" }));
+          // fall through → stream this frame and the rest of the interruption
+        } else {
+          bargeMs = 0;
+        }
         const int16 = downsampleToInt16(e.data, audioCtx.sampleRate);
         if (ws.readyState === WebSocket.OPEN) ws.send(int16.buffer);
       };
