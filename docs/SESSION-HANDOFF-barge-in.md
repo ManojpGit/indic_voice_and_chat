@@ -6,35 +6,21 @@
 
 ## TL;DR — what to do on resume
 
-Barge-in is **built, reviewed, and mostly working**; we're in the **live tune/validate** loop. The user last reported: barge-in fires and addresses the interruption, but it sometimes **listened too long / got stuck**. That stuck/slow bug was root-caused and **fixed** (commit `6bc0ce4` — stale Deepgram `_endpointed` flag). **Awaiting the user's retest of that fix.**
+Barge-in is **built, reviewed, working, and the working tree is CLEAN** (DIAG stripped, tuning committed). We're at the **final validation** step. The user confirmed barge-in fires and addresses the interruption; the earlier stuck/slow-after-interruption bug was root-caused and **fixed** (commit `6bc0ce4` — stale Deepgram `_endpointed` flag). **Still awaiting the user's live retest of that fix** (they hit an unrelated ngrok outage before retesting).
 
 **Immediate next steps:**
-1. Ask the user to retest barge-in at **http://localhost:8765/dev/voice** (NOT ngrok — see Operational below) and confirm: no more stuck, delay-before-thinking acceptable.
-2. If good → **strip the DIAG logging** (see "Uncommitted state" below — exact lines), **commit the tuned `dev_console.html`**, run `.venv/bin/python -m pytest tests/unit -q` (expect 628+ pass), then **finish the branch** (decision log update + push).
-3. If still self-triggering on echo → raise `BARGE_RMS` toward 0.007. If still missing interruptions → lower toward 0.005. If still slow-but-not-stuck → it's Deepgram falling back to the 1000ms `UtteranceEnd` post-gap (its minimum; can't lower) — discuss keeping the stream warm during agent turns as a follow-up.
+1. Relaunch the server (it'll be down after a machine restart — command in Operational below).
+2. Ask the user to retest barge-in at **http://localhost:8765/dev/voice** (NOT ngrok) and confirm: no more stuck, delay-before-thinking acceptable.
+3. If good → **push** (origin/main is ~11 commits behind; user wanted to confirm before pushing) and optionally fold the barge-in outcome into `docs/latency-llm-stt-experiments.md`. That closes the feature.
+4. If still self-triggering on echo → raise `BARGE_RMS` toward 0.007 in `static/dev_console.html`. If still missing interruptions → lower toward 0.005. If still slow-but-not-stuck → it's Deepgram falling back to the 1000ms `UtteranceEnd` post-gap (its minimum; can't lower) — discuss keeping the stream warm during agent turns as a follow-up. (If you need to debug again, re-add diagnostics — the prior DIAG approach: log `[barge] rms=...` in the worklet + `barge_in frame received`/`agent_busy` in the bridge.)
 
 ---
 
-## Uncommitted working-tree state (LOST on restart if not handled)
+## Working-tree state — CLEAN (as of `7ea8d18`)
 
-`git status` shows two modified files (plus untracked `.claude/` which is intentionally never committed):
+`git status` is clean except untracked `.claude/` (never commit). The DIAG logging has been **stripped** and the validated barge-in tuning **committed** (`7ea8d18`): `BARGE_RMS=0.006` (was 0.02 — measured user speech ~0.008–0.012 RMS post-AEC, echo floor <0.005) + a decay accumulator (`Math.max(0, bargeMs - frameMs)` instead of hard reset). `src/api/browser_bridge.py` is back to its committed form. Nothing to strip or recover.
 
-### `static/dev_console.html` — MIX of keepers + DIAG
-**KEEP (real tuning, validated):**
-- `const BARGE_RMS = 0.006;` (was 0.02 — measured: user speech ~0.008–0.012 RMS post-AEC, echo floor <0.005).
-- The decay accumulator: `bargeMs = rms > BARGE_RMS ? bargeMs + frameMs : Math.max(0, bargeMs - frameMs);` (was a hard reset to 0).
-
-**STRIP (DIAG throwaway):**
-- `window._bargeN = 0;   // DIAG throttle counter` line.
-- The two `console.log` DIAG lines in the worklet handler: `[barge] rms=...` (the `if (rms > 0.005 && (++window._bargeN % 5 === 0)) console.log(...)`) and `[barge] FIRED ...`.
-
-### `src/api/browser_bridge.py` — ALL DIAG (strip entirely)
-Three added `log.info("DIAG ...")` lines:
-- In `run()`'s `barge_in` branch: `log.info("DIAG barge_in frame received", ...)` and the `elif ctrl: log.info("DIAG control frame", ...)` branch.
-- In `_handle_barge_in()`: `log.info("DIAG barge-in ignored (agent not busy)")` before the early `return`.
-Revert these so `_handle_barge_in` and the `run()` text branch match their committed form (the committed `run()` branch was just `if ctrl.get("type")=="barge_in": self._handle_barge_in()` then `continue`).
-
-> Note: `src/providers/stt/deepgram.py` has a kept observability line `log.warning("deepgram stream ended unexpectedly", ...)` — that is COMMITTED (931c277), not DIAG, leave it.
+> `src/providers/stt/deepgram.py`'s `log.warning("deepgram stream ended unexpectedly", ...)` is committed observability (931c277), not DIAG — leave it.
 
 ---
 
@@ -56,7 +42,7 @@ Revert these so `_handle_barge_in` and the `run()` text branch match their commi
 
 ## Git state
 
-- **Local `main` HEAD:** `6bc0ce4`.
+- **Local `main` HEAD:** `7ea8d18` (barge-in tuning) → preceded by `41158ea` (this handoff doc) and `6bc0ce4` (deepgram endpoint fix).
 - **`origin/main`:** behind — these commits are **NOT pushed yet**: `c630d46` (turn-timeout fix), `931c277` (streaming-STT crash/drop logging), `dceb70a`+`e609a56` (barge-in spec+plan), `cfbae82` `db657e1` `3360de2` `c7e4fe4` (barge-in impl), `6bc0ce4` (deepgram endpoint fix), plus the docs commits from earlier (`3476f51`, `49a6a25` were pushed; verify). **Push after barge-in is finalized** (user has been asked to confirm before pushing).
 - Untracked `.claude/` — never commit.
 
