@@ -23,6 +23,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+from src.analysis.call_outcome import analyze_call
+from src.interfaces.llm import LLMMessage
 from src.pipeline.turn_capture import accumulate_and_detect
 from src.pipeline.vad import EndpointConfig, EndpointDetector, VADDetector
 
@@ -52,6 +54,8 @@ class BrowserVoiceBridge:
         vad: VADDetector,
         config: BrowserBridgeConfig | None = None,
         stream_provider=None,
+        llm=None,
+        tenant_timezone: str = "Asia/Kolkata",
     ):
         self._ws = websocket
         self._agent = agent
@@ -73,6 +77,10 @@ class BrowserVoiceBridge:
         self._stream_session = None
         self._agent_busy = False
         self._cancel_event = None  # set per in-flight streaming turn; barge-in fires it
+        self._llm = llm
+        self._tenant_timezone = tenant_timezone
+        self._last_action: str | None = None
+        self._outcome_emitted = False
 
     # --- outbound helpers ---------------------------------------------
 
@@ -162,6 +170,10 @@ class BrowserVoiceBridge:
                     await self._stream_session.aclose()
                 except Exception:  # noqa: BLE001
                     pass
+            try:
+                await self._emit_outcome()
+            except Exception:  # noqa: BLE001
+                log.exception("emit outcome failed")
             await self._agent.handle_hangup()
 
     async def _read_hello(self) -> None:
@@ -226,6 +238,7 @@ class BrowserVoiceBridge:
         self._endpoint.reset()
         await self._send_json({"type": "status", "status": "thinking"})
         outcome = await self._agent.handle_turn(captured, self._send_pcm)
+        self._last_action = outcome.response.action
 
         m = outcome.pipeline.metrics
         log.info(
@@ -307,6 +320,8 @@ class BrowserVoiceBridge:
         finally:
             self._cancel_event = None
 
+        self._last_action = outcome.response.action
+
         # Barge-in: the agent's reply was cancelled mid-utterance. Don't emit the
         # abandoned reply — return to listening; the interruption follows as the
         # next turn.
@@ -361,6 +376,41 @@ class BrowserVoiceBridge:
             self._cancel_event.set()
         self._agent_busy = False
         log.info("barge-in: cancelling current turn")
+
+    async def _emit_outcome(self) -> None:
+        """Analyze the finished call and push the outcome to the browser. Idempotent."""
+        if self._outcome_emitted or self._llm is None or self._agent is None:
+            return
+        self._outcome_emitted = True
+        try:
+            from datetime import datetime, timezone
+
+            transcript = [
+                m for m in getattr(self._agent.session, "turns", [])
+                if isinstance(m, LLMMessage)
+            ]
+            analysis = await analyze_call(
+                transcript=transcript,
+                slots=self._agent.slots.values,
+                telephony_status=None,
+                final_action=self._last_action,
+                tenant_timezone=self._tenant_timezone,
+                now=datetime.now(timezone.utc),
+                llm=self._llm,
+            )
+        except Exception:  # noqa: BLE001 - never let analysis break teardown
+            log.exception("call outcome analysis failed")
+            return
+        cb = analysis.callback_datetime
+        await self._send_json({
+            "type": "outcome",
+            "outcome": analysis.outcome.value,
+            "summary": analysis.summary,
+            "notes": analysis.notes,
+            "callback_datetime": cb.isoformat() if cb else None,
+            "callback_phrase": analysis.callback_phrase,
+            "source": analysis.analysis_source,
+        })
 
     def _reset_capture(self) -> None:
         """Discard any audio buffered while the agent was busy, so the next

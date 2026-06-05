@@ -286,3 +286,27 @@ async def test_bridge_emits_error_event_on_turn_error():
     events = [json.loads(t) for t in ws.sent_text]
     assert any(e.get("type") == "error" and "pipeline error" in e.get("message", "") for e in events)
     assert agent.hung_up is True  # call still completed cleanly
+
+
+@pytest.mark.asyncio
+async def test_emit_outcome_sends_ws_message(monkeypatch):
+    import src.api.browser_bridge as bb
+    from src.campaign.models import CallAnalysis, LeadCallOutcome
+
+    async def fake_analyze(**kwargs):
+        return CallAnalysis(
+            outcome=LeadCallOutcome.INTERESTED,
+            summary="Good call.", notes="Send link.",
+        )
+
+    monkeypatch.setattr(bb, "analyze_call", fake_analyze)
+
+    ws = FakeWebSocket([])
+    bridge = _bridge(ws, FakeAgent())
+    bridge._llm = object()  # non-None; fake_analyze ignores it
+    await bridge._emit_outcome()
+
+    sent = [json.loads(m) for m in ws.sent_text]
+    outcome_msgs = [m for m in sent if m.get("type") == "outcome"]
+    assert outcome_msgs and outcome_msgs[0]["outcome"] == "interested"
+    assert outcome_msgs[0]["summary"] == "Good call."
