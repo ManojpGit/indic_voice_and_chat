@@ -164,6 +164,10 @@ class CallResult(BaseModel):
     disposition: CallDisposition
     interest_level: Optional[str] = None
     slots: dict[str, Any] = Field(default_factory=dict)
+    outcome: Optional[LeadCallOutcome] = None
+    summary: str = ""
+    notes: str = ""
+    callback_datetime: Optional[datetime] = None
     duration_ms: int = 0
     total_turns: int = 0
     sentiment_history: list[str] = Field(default_factory=list)

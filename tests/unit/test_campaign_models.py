@@ -103,3 +103,21 @@ def test_leads_from_dicts_skips_missing_phone() -> None:
     leads, errors = leads_from_dicts(rows, campaign_id="c1", tenant_id="t1")
     assert len(leads) == 1
     assert errors == [(1, "missing phone_number")]
+
+
+def test_call_result_carries_outcome_and_summary():
+    from datetime import datetime
+    from src.campaign.models import (
+        CallResult, CallDisposition, LeadCallOutcome, disposition_from_outcome,
+    )
+
+    outcome = LeadCallOutcome.CALLBACK_REQUESTED
+    r = CallResult(
+        session_id="s1", tenant_id="t1", campaign_id="c1", lead_id="l1",
+        disposition=disposition_from_outcome(outcome),
+        outcome=outcome, summary="Wants a callback.", notes="Tomorrow eve.",
+        started_at=datetime(2026, 6, 5, 12, 0), ended_at=datetime(2026, 6, 5, 12, 3),
+    )
+    assert r.outcome == LeadCallOutcome.CALLBACK_REQUESTED
+    assert r.disposition == CallDisposition.INTERESTED_CALLBACK
+    assert r.summary == "Wants a callback."
