@@ -37,6 +37,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
+from src.api.outcome_recorder import OutcomeRecorderMixin
+from src.interfaces.llm import ILLMProvider
 from src.pipeline.audio_utils import resample_pcm16
 from src.pipeline.vad import (
     EndpointConfig,
@@ -70,7 +72,7 @@ class ExotelBridgeConfig:
     max_idle_silence_s: float = 12.0
 
 
-class ExotelMediaBridge:
+class ExotelMediaBridge(OutcomeRecorderMixin):
     """One bridge instance per call. Drive with ``run()`` from the WS handler."""
 
     def __init__(
@@ -79,6 +81,8 @@ class ExotelMediaBridge:
         agent: _AgentLike,
         vad: VADDetector,
         config: Optional[ExotelBridgeConfig] = None,
+        llm: Optional[ILLMProvider] = None,
+        tenant_timezone: str = "Asia/Kolkata",
     ) -> None:
         self._ws = websocket
         self._agent = agent
@@ -92,6 +96,10 @@ class ExotelMediaBridge:
         self._downsample_state: Optional[tuple] = None
         self._stopped = asyncio.Event()
         self._idle_silence_ms = 0
+        self._llm = llm
+        self._tenant_timezone = tenant_timezone
+        self._last_action: Optional[str] = None
+        self._outcome_recorded = False
 
     async def run(self) -> None:
         await self._agent.start()
@@ -115,6 +123,10 @@ class ExotelMediaBridge:
                     log.info("exotel stream stopped")
                     break
         finally:
+            try:
+                await self._record_outcome()
+            except Exception:  # noqa: BLE001 - never let analysis break teardown
+                log.exception("record outcome failed")
             await self._agent.handle_hangup()
 
     async def _on_media_frame(self, media: dict) -> None:
@@ -153,7 +165,9 @@ class ExotelMediaBridge:
         captured = bytes(self._capture_buffer)
         self._capture_buffer.clear()
         self._endpoint.reset()
-        await self._agent.handle_turn(captured, self._send_pcm)
+        outcome = await self._agent.handle_turn(captured, self._send_pcm)
+        if outcome is not None:
+            self._last_action = getattr(getattr(outcome, "response", None), "action", None)
         if getattr(self._agent, "state", None) is not None and getattr(
             self._agent.state, "is_terminal", False
         ):

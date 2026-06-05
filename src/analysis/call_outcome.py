@@ -17,7 +17,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from src.campaign.models import (
     CONVERSATIONAL_OUTCOMES,
     CallAnalysis,
+    CallResult,
     LeadCallOutcome,
+    disposition_from_outcome,
     outcome_from_telephony,
 )
 from src.interfaces.llm import ILLMProvider, LLMConfig, LLMMessage
@@ -156,4 +158,99 @@ async def analyze_call(
         callback_datetime=_resolve_callback(obj.get("callback_datetime"), tz),
         callback_phrase=(obj.get("callback_phrase") or None),
         analysis_source="llm",
+    )
+
+
+async def analyze_agent_call(
+    agent: Any,
+    *,
+    llm: Optional[ILLMProvider],
+    tenant_timezone: str,
+    final_action: Optional[str],
+    now: datetime,
+    telephony_status: Optional[str] = None,
+) -> Optional[CallAnalysis]:
+    """Run outcome analysis for a finished call given the live agent.
+
+    Pulls the transcript and collected slots off the agent's session, then
+    delegates to ``analyze_call``. Returns ``None`` when there's no LLM or
+    agent to analyze with (so callers can no-op). Never raises — ``analyze_call``
+    handles its own failures. Defensive about the agent shape so it works with
+    any bridge's agent (browser/telephony).
+    """
+    if llm is None or agent is None:
+        return None
+    session = getattr(agent, "session", None)
+    turns = getattr(session, "turns", []) if session is not None else []
+    transcript = [m for m in turns if isinstance(m, LLMMessage)]
+    slots_obj = getattr(agent, "slots", None)
+    slots = getattr(slots_obj, "values", {}) if slots_obj is not None else {}
+    return await analyze_call(
+        transcript=transcript,
+        slots=slots,
+        telephony_status=telephony_status,
+        final_action=final_action,
+        tenant_timezone=tenant_timezone,
+        now=now,
+        llm=llm,
+    )
+
+
+async def build_call_result(
+    *,
+    session_id: str,
+    tenant_id: str,
+    campaign_id: str,
+    lead_id: str,
+    transcript: list[LLMMessage],
+    slots: dict[str, Any],
+    telephony_status: Optional[str],
+    final_action: Optional[str],
+    tenant_timezone: str,
+    now: datetime,
+    llm: ILLMProvider,
+    started_at: datetime,
+    ended_at: datetime,
+    duration_ms: int = 0,
+    total_turns: int = 0,
+    sentiment_history: Optional[list[str]] = None,
+    interest_level: Optional[str] = None,
+) -> CallResult:
+    """Turn a finished call into a fully-populated ``CallResult``.
+
+    This is the 'build CallResult' step a campaign dispatch agent runs after a
+    call completes: it analyzes the call (outcome + summary + notes + callback)
+    and maps the outcome to the legacy ``disposition`` the orchestrator/CRM
+    consume.
+
+    ``analyze_call`` never raises (it falls back internally), so in practice this
+    builder doesn't either; the orchestrator also wraps each dispatch in
+    try/except (a failed dispatch → retry), so a stray error won't lose the lead.
+    """
+    analysis = await analyze_call(
+        transcript=transcript,
+        slots=slots,
+        telephony_status=telephony_status,
+        final_action=final_action,
+        tenant_timezone=tenant_timezone,
+        now=now,
+        llm=llm,
+    )
+    return CallResult(
+        session_id=session_id,
+        tenant_id=tenant_id,
+        campaign_id=campaign_id,
+        lead_id=lead_id,
+        disposition=disposition_from_outcome(analysis.outcome),
+        outcome=analysis.outcome,
+        summary=analysis.summary,
+        notes=analysis.notes,
+        callback_datetime=analysis.callback_datetime,
+        interest_level=interest_level,
+        slots=slots,
+        duration_ms=duration_ms,
+        total_turns=total_turns,
+        sentiment_history=sentiment_history or [],
+        started_at=started_at,
+        ended_at=ended_at,
     )

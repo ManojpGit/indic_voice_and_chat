@@ -33,6 +33,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
+from src.api.outcome_recorder import OutcomeRecorderMixin
+from src.interfaces.llm import ILLMProvider
 from src.pipeline.audio_utils import (
     mulaw_to_pcm16,
     pcm16_to_mulaw,
@@ -77,7 +79,7 @@ class TwilioBridgeConfig:
     max_idle_silence_s: float = 12.0
 
 
-class TwilioMediaBridge:
+class TwilioMediaBridge(OutcomeRecorderMixin):
     """One bridge instance per call. Drive with ``run()`` from the websocket."""
 
     def __init__(
@@ -86,6 +88,8 @@ class TwilioMediaBridge:
         agent: _AgentLike,
         vad: VADDetector,
         config: Optional[TwilioBridgeConfig] = None,
+        llm: Optional[ILLMProvider] = None,
+        tenant_timezone: str = "Asia/Kolkata",
     ) -> None:
         self._ws = websocket
         self._agent = agent
@@ -99,6 +103,10 @@ class TwilioMediaBridge:
         self._downsample_state: Optional[tuple] = None
         self._stopped = asyncio.Event()
         self._idle_silence_ms = 0
+        self._llm = llm
+        self._tenant_timezone = tenant_timezone
+        self._last_action: Optional[str] = None
+        self._outcome_recorded = False
 
     # --- entrypoint ----------------------------------------------------
 
@@ -122,6 +130,10 @@ class TwilioMediaBridge:
                     break
                 # ``mark`` events are ignored; we don't use playback marks here.
         finally:
+            try:
+                await self._record_outcome()
+            except Exception:  # noqa: BLE001 - never let analysis break teardown
+                log.exception("record outcome failed")
             await self._agent.handle_hangup()
 
     # --- inbound -------------------------------------------------------
@@ -167,7 +179,11 @@ class TwilioMediaBridge:
         self._capture_buffer.clear()
         self._endpoint.reset()
         # The agent's pipeline runs STT->LLM->TTS and pushes audio back via our sink.
-        await self._agent.handle_turn(captured, self._send_pcm)
+        outcome = await self._agent.handle_turn(captured, self._send_pcm)
+        # Record the final action for the post-call outcome fallback (defensive:
+        # the real agent returns a TurnOutcome; test fakes may return None).
+        if outcome is not None:
+            self._last_action = getattr(getattr(outcome, "response", None), "action", None)
         # If the agent ended the call, stop reading.
         if getattr(self._agent, "state", None) is not None and getattr(
             self._agent.state, "is_terminal", False

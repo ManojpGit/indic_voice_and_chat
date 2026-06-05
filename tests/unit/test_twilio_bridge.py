@@ -255,3 +255,54 @@ async def test_bridge_ignores_outbound_track_frames() -> None:
     )
     await bridge.run()
     assert agent.turns == []
+
+
+@pytest.mark.asyncio
+async def test_records_outcome_on_hangup_when_llm_present(monkeypatch) -> None:
+    import src.api.outcome_recorder as orec
+    from src.campaign.models import CallAnalysis, LeadCallOutcome
+
+    calls = []
+
+    async def fake_analyze(agent, **kwargs):
+        calls.append(kwargs)
+        return CallAnalysis(outcome=LeadCallOutcome.INTERESTED, summary="s")
+
+    monkeypatch.setattr(orec, "analyze_agent_call", fake_analyze)
+
+    agent = FakeAgent()
+    ws = FakeWebSocket(incoming=[{"event": "connected"}, _start_frame(), _stop_frame()])
+    bridge = TwilioMediaBridge(
+        websocket=ws,
+        agent=agent,
+        vad=EnergyVAD(sample_rate=16000, frame_ms=30, rms_threshold=300.0),
+        llm=object(),
+        tenant_timezone="Asia/Kolkata",
+    )
+    await bridge.run()
+    assert len(calls) == 1  # analyzed once on hangup
+    assert calls[0]["tenant_timezone"] == "Asia/Kolkata"
+    assert agent.hangup_called is True
+
+
+@pytest.mark.asyncio
+async def test_no_outcome_recording_when_llm_absent(monkeypatch) -> None:
+    import src.api.outcome_recorder as orec
+
+    calls = []
+
+    async def fake_analyze(agent, **kwargs):  # pragma: no cover - must not run
+        calls.append(kwargs)
+
+    monkeypatch.setattr(orec, "analyze_agent_call", fake_analyze)
+
+    agent = FakeAgent()
+    ws = FakeWebSocket(incoming=[{"event": "connected"}, _start_frame(), _stop_frame()])
+    bridge = TwilioMediaBridge(  # no llm -> recording is a no-op
+        websocket=ws,
+        agent=agent,
+        vad=EnergyVAD(sample_rate=16000, frame_ms=30, rms_threshold=300.0),
+    )
+    await bridge.run()
+    assert calls == []
+    assert agent.hangup_called is True

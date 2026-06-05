@@ -238,3 +238,47 @@ async def test_run_stats_reflect_progress() -> None:
 
 async def _zero_sleep(seconds: float) -> None:
     return None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_built_from_analyze_call_flows_to_crm() -> None:
+    """End-to-end: a dispatch agent that builds its CallResult via
+    build_call_result (real outcome analysis) flows correctly through the
+    orchestrator -> CRM, with the outcome mapped to the legacy disposition."""
+    from src.analysis.call_outcome import build_call_result
+    from src.campaign.models import LeadCallOutcome
+    from src.interfaces.llm import LLMMessage, LLMResult
+
+    class _FakeLLM:
+        async def generate(self, messages, config) -> LLMResult:
+            return LLMResult(
+                text='{"outcome":"interested","summary":"Lead is in.","notes":"Send link."}',
+                finish_reason="stop",
+            )
+
+        async def generate_stream(self, messages, config):  # pragma: no cover
+            raise NotImplementedError
+
+    bus = EventBus()
+    crm = FakeCRMClient()
+    now = datetime.utcnow()
+
+    async def dispatch(c, lead: Lead) -> CallResult:
+        return await build_call_result(
+            session_id=f"sess-{lead.id}", tenant_id="t_test", campaign_id="c1",
+            lead_id=lead.id,
+            transcript=[LLMMessage(role="user", content="haan link bhejo")],
+            slots={"interest_level": "hot"}, telephony_status=None,
+            final_action="close_positive", tenant_timezone="Asia/Kolkata",
+            now=now, llm=_FakeLLM(), started_at=now, ended_at=now,
+            interest_level="hot",
+        )
+
+    orch = CampaignOrchestrator(scheduler=_scheduler(), dispatch=dispatch, bus=bus, crm=crm)
+    await orch.run(_campaign(), [_lead("l1")], max_iterations=10, sleep_fn=_zero_sleep)
+
+    assert len(crm.updates) == 1
+    pushed = crm.updates[0]
+    assert pushed.outcome == LeadCallOutcome.INTERESTED
+    assert pushed.disposition == CallDisposition.INTERESTED_TRANSFER  # mapped from outcome
+    assert pushed.summary == "Lead is in."
