@@ -1,5 +1,3 @@
-import pytest
-
 from src.campaign.models import (
     CallDisposition,
     LeadCallOutcome,

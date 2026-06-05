@@ -94,13 +94,13 @@ _TELEPHONY_TO_OUTCOME = {
 }
 
 
-def disposition_from_outcome(outcome: "LeadCallOutcome") -> CallDisposition:
+def disposition_from_outcome(outcome: LeadCallOutcome) -> CallDisposition:
     """Map a canonical outcome to the legacy disposition consumed by the
     orchestrator/CRM/benchmarks. Total over LeadCallOutcome."""
     return _OUTCOME_TO_DISPOSITION[outcome]
 
 
-def outcome_from_telephony(status: Optional[str]) -> Optional["LeadCallOutcome"]:
+def outcome_from_telephony(status: Optional[str]) -> Optional[LeadCallOutcome]:
     """Map a normalized telephony status to an unreachable outcome, or None
     when the call connected (the conversational path then applies)."""
     return _TELEPHONY_TO_OUTCOME.get(status or "")
