@@ -321,8 +321,6 @@ class BrowserVoiceBridge:
         finally:
             self._cancel_event = None
 
-        self._last_action = outcome.response.action
-
         # Barge-in: the agent's reply was cancelled mid-utterance. Don't emit the
         # abandoned reply — return to listening; the interruption follows as the
         # next turn.
@@ -333,6 +331,9 @@ class BrowserVoiceBridge:
             await self._send_json({"type": "status", "status": "listening"})
             return
 
+        # Only record the action for turns that actually completed (not barge-in
+        # cancellations, where the action is a meaningless default).
+        self._last_action = outcome.response.action
         m = outcome.pipeline.metrics
         log.info(
             "browser turn (stream)",
