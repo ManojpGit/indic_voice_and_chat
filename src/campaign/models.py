@@ -109,6 +109,17 @@ def outcome_from_telephony(status: Optional[str]) -> Optional[LeadCallOutcome]:
 # --- Models --------------------------------------------------------------
 
 
+class CallAnalysis(BaseModel):
+    """Result of analyzing one finished call. Produced by analyze_call()."""
+
+    outcome: LeadCallOutcome
+    summary: str = ""           # English, 2-3 sentences
+    notes: str = ""             # English; objections, preferences, next steps
+    callback_datetime: Optional[datetime] = None  # tz-aware when resolved
+    callback_phrase: Optional[str] = None         # raw, e.g. "kal shaam 5 baje"
+    analysis_source: str = "llm"  # "llm" | "telephony" | "fallback"
+
+
 class Lead(BaseModel):
     id: str
     tenant_id: str

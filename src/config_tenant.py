@@ -163,6 +163,7 @@ class TenantSettings(BaseModel):
     name: str = Field(min_length=1)
     status: str = "active"
     default_language: str = "hi"
+    timezone: str = "Asia/Kolkata"  # IANA tz; resolves relative callback times
     webhook_secret_env: Optional[str] = None
 
     pipeline: TenantPipelineConfig = Field(default_factory=TenantPipelineConfig)

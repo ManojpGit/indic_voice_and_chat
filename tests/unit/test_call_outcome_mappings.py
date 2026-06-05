@@ -38,3 +38,21 @@ def test_telephony_status_maps_to_outcome():
 def test_telephony_status_unknown_returns_none():
     assert outcome_from_telephony("answered") is None
     assert outcome_from_telephony(None) is None
+
+
+def test_call_analysis_defaults():
+    from src.campaign.models import CallAnalysis, LeadCallOutcome
+
+    a = CallAnalysis(outcome=LeadCallOutcome.INTERESTED)
+    assert a.summary == ""
+    assert a.notes == ""
+    assert a.callback_datetime is None
+    assert a.callback_phrase is None
+    assert a.analysis_source == "llm"
+
+
+def test_tenant_settings_has_timezone_default():
+    from src.config_tenant import TenantSettings
+
+    t = TenantSettings(id="t_x", slug="x", name="X")
+    assert t.timezone == "Asia/Kolkata"
