@@ -98,10 +98,11 @@ async def test_telephony_status_short_circuits_without_llm():
 
 
 class RaisingLLM:
-    calls = 0
+    def __init__(self):
+        self.calls = 0
 
     async def generate(self, messages, config):
-        RaisingLLM.calls += 1
+        self.calls += 1
         raise RuntimeError("boom")
 
     async def generate_stream(self, messages, config):  # pragma: no cover

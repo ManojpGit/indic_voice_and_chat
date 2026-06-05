@@ -33,6 +33,13 @@ _ACTION_FALLBACK = {
     "close_negative": LeadCallOutcome.NOT_INTERESTED,
 }
 
+_TELEPHONY_SUMMARY = {
+    LeadCallOutcome.NO_ANSWER: "No answer.",
+    LeadCallOutcome.BUSY: "Line was busy.",
+    LeadCallOutcome.CALL_FAILED: "Call failed to connect.",
+    LeadCallOutcome.VOICEMAIL: "Reached voicemail.",
+}
+
 _SYSTEM_PROMPT = """You analyze a finished sales/outreach phone call and classify its outcome.
 
 Return ONLY a JSON object with these keys:
@@ -113,15 +120,9 @@ async def analyze_call(
 
     unreachable = outcome_from_telephony(telephony_status)
     if unreachable is not None:
-        canned = {
-            LeadCallOutcome.NO_ANSWER: "No answer.",
-            LeadCallOutcome.BUSY: "Line was busy.",
-            LeadCallOutcome.CALL_FAILED: "Call failed to connect.",
-            LeadCallOutcome.VOICEMAIL: "Reached voicemail.",
-        }
         return CallAnalysis(
             outcome=unreachable,
-            summary=canned.get(unreachable, ""),
+            summary=_TELEPHONY_SUMMARY.get(unreachable, ""),
             analysis_source="telephony",
         )
 
