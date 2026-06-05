@@ -86,6 +86,7 @@ def _zone(tz_name: str) -> ZoneInfo:
 
 def _fallback(final_action: Optional[str], note: str) -> CallAnalysis:
     outcome = _ACTION_FALLBACK.get(final_action or "", LeadCallOutcome.NOT_INTERESTED)
+    # summary is intentionally empty on fallback; the reason lives in notes
     return CallAnalysis(
         outcome=outcome,
         summary="",
@@ -106,9 +107,12 @@ async def analyze_call(
 ) -> CallAnalysis:
     """Classify a finished call. Never raises — failures fall back."""
     tz = _zone(tenant_timezone)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    now_local = now.astimezone(tz)
 
     user_msg = (
-        f"NOW: {now.isoformat()}\nTIMEZONE: {tenant_timezone}\n"
+        f"NOW: {now_local.isoformat()}\nTIMEZONE: {tenant_timezone}\n"
         f"COLLECTED DATA: {json.dumps(slots, ensure_ascii=False)}\n\n"
         f"TRANSCRIPT:\n{_render_transcript(transcript)}"
     )
