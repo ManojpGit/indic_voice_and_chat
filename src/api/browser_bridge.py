@@ -22,6 +22,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from src.analysis.call_outcome import analyze_call
 from src.interfaces.llm import LLMMessage
@@ -383,8 +384,6 @@ class BrowserVoiceBridge:
             return
         self._outcome_emitted = True
         try:
-            from datetime import datetime, timezone
-
             transcript = [
                 m for m in getattr(self._agent.session, "turns", [])
                 if isinstance(m, LLMMessage)
@@ -400,6 +399,10 @@ class BrowserVoiceBridge:
             )
         except Exception:  # noqa: BLE001 - never let analysis break teardown
             log.exception("call outcome analysis failed")
+            try:
+                await self._send_json({"type": "error", "message": "outcome analysis failed"})
+            except Exception:  # noqa: BLE001
+                pass
             return
         cb = analysis.callback_datetime
         await self._send_json({

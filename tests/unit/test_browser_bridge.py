@@ -310,3 +310,30 @@ async def test_emit_outcome_sends_ws_message(monkeypatch):
     outcome_msgs = [m for m in sent if m.get("type") == "outcome"]
     assert outcome_msgs and outcome_msgs[0]["outcome"] == "interested"
     assert outcome_msgs[0]["summary"] == "Good call."
+
+
+@pytest.mark.asyncio
+async def test_emit_outcome_is_idempotent(monkeypatch):
+    import src.api.browser_bridge as bb
+    from src.campaign.models import CallAnalysis, LeadCallOutcome
+
+    async def fake_analyze(**kwargs):
+        return CallAnalysis(outcome=LeadCallOutcome.INTERESTED, summary="x")
+
+    monkeypatch.setattr(bb, "analyze_call", fake_analyze)
+    ws = FakeWebSocket([])
+    bridge = _bridge(ws, FakeAgent())
+    bridge._llm = object()
+    await bridge._emit_outcome()
+    await bridge._emit_outcome()
+    outcome_msgs = [m for m in (json.loads(x) for x in ws.sent_text) if m.get("type") == "outcome"]
+    assert len(outcome_msgs) == 1
+
+
+@pytest.mark.asyncio
+async def test_emit_outcome_noop_when_llm_none():
+    ws = FakeWebSocket([])
+    bridge = _bridge(ws, FakeAgent())  # _llm defaults to None
+    await bridge._emit_outcome()
+    outcome_msgs = [m for m in (json.loads(x) for x in ws.sent_text) if m.get("type") == "outcome"]
+    assert outcome_msgs == []
