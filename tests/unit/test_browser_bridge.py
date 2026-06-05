@@ -286,3 +286,80 @@ async def test_bridge_emits_error_event_on_turn_error():
     events = [json.loads(t) for t in ws.sent_text]
     assert any(e.get("type") == "error" and "pipeline error" in e.get("message", "") for e in events)
     assert agent.hung_up is True  # call still completed cleanly
+
+
+@pytest.mark.asyncio
+async def test_emit_outcome_sends_ws_message(monkeypatch):
+    import src.api.browser_bridge as bb
+    from src.campaign.models import CallAnalysis, LeadCallOutcome
+
+    async def fake_analyze(**kwargs):
+        return CallAnalysis(
+            outcome=LeadCallOutcome.INTERESTED,
+            summary="Good call.", notes="Send link.",
+        )
+
+    monkeypatch.setattr(bb, "analyze_call", fake_analyze)
+
+    ws = FakeWebSocket([])
+    bridge = _bridge(ws, FakeAgent())
+    bridge._llm = object()  # non-None; fake_analyze ignores it
+    await bridge._emit_outcome()
+
+    sent = [json.loads(m) for m in ws.sent_text]
+    outcome_msgs = [m for m in sent if m.get("type") == "outcome"]
+    assert outcome_msgs and outcome_msgs[0]["outcome"] == "interested"
+    assert outcome_msgs[0]["summary"] == "Good call."
+
+
+@pytest.mark.asyncio
+async def test_emit_outcome_is_idempotent(monkeypatch):
+    import src.api.browser_bridge as bb
+    from src.campaign.models import CallAnalysis, LeadCallOutcome
+
+    async def fake_analyze(**kwargs):
+        return CallAnalysis(outcome=LeadCallOutcome.INTERESTED, summary="x")
+
+    monkeypatch.setattr(bb, "analyze_call", fake_analyze)
+    ws = FakeWebSocket([])
+    bridge = _bridge(ws, FakeAgent())
+    bridge._llm = object()
+    await bridge._emit_outcome()
+    await bridge._emit_outcome()
+    outcome_msgs = [m for m in (json.loads(x) for x in ws.sent_text) if m.get("type") == "outcome"]
+    assert len(outcome_msgs) == 1
+
+
+@pytest.mark.asyncio
+async def test_emit_outcome_noop_when_llm_none():
+    ws = FakeWebSocket([])
+    bridge = _bridge(ws, FakeAgent())  # _llm defaults to None
+    await bridge._emit_outcome()
+    outcome_msgs = [m for m in (json.loads(x) for x in ws.sent_text) if m.get("type") == "outcome"]
+    assert outcome_msgs == []
+
+
+@pytest.mark.asyncio
+async def test_end_control_message_emits_outcome_and_hangs_up(monkeypatch):
+    import src.api.browser_bridge as bb
+    from src.campaign.models import CallAnalysis, LeadCallOutcome
+
+    async def fake_analyze(**kwargs):
+        return CallAnalysis(outcome=LeadCallOutcome.NOT_INTERESTED, summary="ended")
+
+    monkeypatch.setattr(bb, "analyze_call", fake_analyze)
+
+    incoming = [
+        {"type": "websocket.receive", "text": json.dumps({"type": "hello", "tenant": "dev"})},
+        {"type": "websocket.receive", "text": json.dumps({"type": "end"})},
+    ]
+    ws = FakeWebSocket(incoming)
+    agent = FakeAgent()
+    bridge = _bridge(ws, agent)
+    bridge._llm = object()
+    await bridge.run()
+
+    outcome_msgs = [m for m in (json.loads(x) for x in ws.sent_text) if m.get("type") == "outcome"]
+    assert len(outcome_msgs) == 1  # emitted once on `end`, idempotent in finally
+    assert outcome_msgs[0]["outcome"] == "not_interested"
+    assert agent.hung_up is True

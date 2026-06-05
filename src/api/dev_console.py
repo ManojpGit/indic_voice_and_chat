@@ -183,6 +183,8 @@ def make_browser_bridge_factory(
             vad=_build_browser_vad(),
             config=BrowserBridgeConfig(),
             stream_provider=_build_stream_provider(tenant),
+            llm=llm,
+            tenant_timezone=getattr(tenant.settings, "timezone", "Asia/Kolkata"),
         )
 
     return factory

@@ -16,7 +16,7 @@ import csv
 import io
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -50,7 +50,74 @@ class CallDisposition(str, Enum):
     VOICEMAIL = "voicemail"
 
 
+class LeadCallOutcome(str, Enum):
+    INTERESTED = "interested"
+    CALLBACK_REQUESTED = "callback_requested"
+    NOT_INTERESTED = "not_interested"
+    REFUSED = "refused"
+    ESCALATED = "escalated"
+    ANGRY_HOSTILE = "angry_hostile"
+    NO_ANSWER = "no_answer"
+    VOICEMAIL = "voicemail"
+    BUSY = "busy"
+    CALL_FAILED = "call_failed"
+
+
+# Conversational outcomes the LLM may return (the rest come from telephony).
+CONVERSATIONAL_OUTCOMES = frozenset({
+    LeadCallOutcome.INTERESTED,
+    LeadCallOutcome.CALLBACK_REQUESTED,
+    LeadCallOutcome.NOT_INTERESTED,
+    LeadCallOutcome.REFUSED,
+    LeadCallOutcome.ESCALATED,
+    LeadCallOutcome.ANGRY_HOSTILE,
+})
+
+_OUTCOME_TO_DISPOSITION = {
+    LeadCallOutcome.INTERESTED: CallDisposition.INTERESTED_TRANSFER,
+    LeadCallOutcome.CALLBACK_REQUESTED: CallDisposition.INTERESTED_CALLBACK,
+    LeadCallOutcome.NOT_INTERESTED: CallDisposition.NOT_INTERESTED,
+    LeadCallOutcome.REFUSED: CallDisposition.DND_REQUESTED,
+    LeadCallOutcome.ESCALATED: CallDisposition.INTERESTED_TRANSFER,
+    LeadCallOutcome.ANGRY_HOSTILE: CallDisposition.DND_REQUESTED,
+    LeadCallOutcome.NO_ANSWER: CallDisposition.BUSY_RETRY,
+    LeadCallOutcome.BUSY: CallDisposition.BUSY_RETRY,
+    LeadCallOutcome.CALL_FAILED: CallDisposition.BUSY_RETRY,
+    LeadCallOutcome.VOICEMAIL: CallDisposition.VOICEMAIL,
+}
+
+_TELEPHONY_TO_OUTCOME = {
+    "no_answer": LeadCallOutcome.NO_ANSWER,
+    "busy": LeadCallOutcome.BUSY,
+    "failed": LeadCallOutcome.CALL_FAILED,
+    "voicemail": LeadCallOutcome.VOICEMAIL,
+}
+
+
+def disposition_from_outcome(outcome: LeadCallOutcome) -> CallDisposition:
+    """Map a canonical outcome to the legacy disposition consumed by the
+    orchestrator/CRM/benchmarks. Total over LeadCallOutcome."""
+    return _OUTCOME_TO_DISPOSITION[outcome]
+
+
+def outcome_from_telephony(status: Optional[str]) -> Optional[LeadCallOutcome]:
+    """Map a normalized telephony status to an unreachable outcome, or None
+    when the call connected (the conversational path then applies)."""
+    return _TELEPHONY_TO_OUTCOME.get(status or "")
+
+
 # --- Models --------------------------------------------------------------
+
+
+class CallAnalysis(BaseModel):
+    """Result of analyzing one finished call. Produced by analyze_call()."""
+
+    outcome: LeadCallOutcome
+    summary: str = ""           # English, 2-3 sentences
+    notes: str = ""             # English; objections, preferences, next steps
+    callback_datetime: Optional[datetime] = None  # tz-aware when resolved
+    callback_phrase: Optional[str] = None         # raw, e.g. "kal shaam 5 baje"
+    analysis_source: Literal["llm", "telephony", "fallback"] = "llm"
 
 
 class Lead(BaseModel):
@@ -97,6 +164,10 @@ class CallResult(BaseModel):
     disposition: CallDisposition
     interest_level: Optional[str] = None
     slots: dict[str, Any] = Field(default_factory=dict)
+    outcome: Optional[LeadCallOutcome] = None
+    summary: str = ""
+    notes: str = ""
+    callback_datetime: Optional[datetime] = None  # -> Conversation.callback_at (DB)
     duration_ms: int = 0
     total_turns: int = 0
     sentiment_history: list[str] = Field(default_factory=list)

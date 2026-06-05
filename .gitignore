@@ -40,3 +40,6 @@ data/
 # Logs
 *.log
 logs/
+
+# Local Claude Code settings (never commit)
+.claude/

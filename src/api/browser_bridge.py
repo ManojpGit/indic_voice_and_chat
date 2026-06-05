@@ -22,7 +22,10 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
+from src.analysis.call_outcome import analyze_call
+from src.interfaces.llm import LLMMessage
 from src.pipeline.turn_capture import accumulate_and_detect
 from src.pipeline.vad import EndpointConfig, EndpointDetector, VADDetector
 
@@ -52,6 +55,8 @@ class BrowserVoiceBridge:
         vad: VADDetector,
         config: BrowserBridgeConfig | None = None,
         stream_provider=None,
+        llm=None,
+        tenant_timezone: str = "Asia/Kolkata",
     ):
         self._ws = websocket
         self._agent = agent
@@ -73,6 +78,10 @@ class BrowserVoiceBridge:
         self._stream_session = None
         self._agent_busy = False
         self._cancel_event = None  # set per in-flight streaming turn; barge-in fires it
+        self._llm = llm
+        self._tenant_timezone = tenant_timezone
+        self._last_action: str | None = None
+        self._outcome_emitted = False
 
     # --- outbound helpers ---------------------------------------------
 
@@ -147,6 +156,14 @@ class BrowserVoiceBridge:
                         ctrl = {}
                     if ctrl.get("type") == "barge_in":
                         self._handle_barge_in()
+                    elif ctrl.get("type") == "end":
+                        # Graceful client-initiated end: deliver the outcome while
+                        # the socket is still open, then stop the loop. break (not
+                        # continue) so exit_reason isn't overwritten by the while/else.
+                        await self._emit_outcome()
+                        self._stopped = True
+                        exit_reason = "client end"
+                        break
                     continue
             else:
                 exit_reason = "stopped (terminal)"
@@ -162,6 +179,10 @@ class BrowserVoiceBridge:
                     await self._stream_session.aclose()
                 except Exception:  # noqa: BLE001
                     pass
+            try:
+                await self._emit_outcome()
+            except Exception:  # noqa: BLE001
+                log.exception("emit outcome failed")
             await self._agent.handle_hangup()
 
     async def _read_hello(self) -> None:
@@ -226,6 +247,7 @@ class BrowserVoiceBridge:
         self._endpoint.reset()
         await self._send_json({"type": "status", "status": "thinking"})
         outcome = await self._agent.handle_turn(captured, self._send_pcm)
+        self._last_action = outcome.response.action
 
         m = outcome.pipeline.metrics
         log.info(
@@ -317,6 +339,9 @@ class BrowserVoiceBridge:
             await self._send_json({"type": "status", "status": "listening"})
             return
 
+        # Only record the action for turns that actually completed (not barge-in
+        # cancellations, where the action is a meaningless default).
+        self._last_action = outcome.response.action
         m = outcome.pipeline.metrics
         log.info(
             "browser turn (stream)",
@@ -361,6 +386,58 @@ class BrowserVoiceBridge:
             self._cancel_event.set()
         self._agent_busy = False
         log.info("barge-in: cancelling current turn")
+
+    async def _emit_outcome(self) -> None:
+        """Analyze the finished call and push the outcome to the browser. Idempotent."""
+        if self._outcome_emitted or self._llm is None or self._agent is None:
+            return
+        self._outcome_emitted = True
+        try:
+            transcript = [
+                m for m in getattr(self._agent.session, "turns", [])
+                if isinstance(m, LLMMessage)
+            ]
+            analysis = await analyze_call(
+                transcript=transcript,
+                slots=self._agent.slots.values,
+                telephony_status=None,
+                final_action=self._last_action,
+                tenant_timezone=self._tenant_timezone,
+                now=datetime.now(timezone.utc),
+                llm=self._llm,
+            )
+        except Exception:  # noqa: BLE001 - never let analysis break teardown
+            log.exception("call outcome analysis failed")
+            try:
+                await self._send_json({"type": "error", "message": "outcome analysis failed"})
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        cb = analysis.callback_datetime
+        # Record the outcome server-side FIRST, so it survives even when the
+        # socket is already gone (raw disconnect: tab close / crash / network
+        # drop) and the push below cannot be delivered.
+        log.info(
+            "call outcome",
+            extra={
+                "outcome": analysis.outcome.value,
+                "source": analysis.analysis_source,
+                "summary": analysis.summary[:200],
+                "callback": cb.isoformat() if cb else None,
+            },
+        )
+        try:
+            await self._send_json({
+                "type": "outcome",
+                "outcome": analysis.outcome.value,
+                "summary": analysis.summary,
+                "notes": analysis.notes,
+                "callback_datetime": cb.isoformat() if cb else None,
+                "callback_phrase": analysis.callback_phrase,
+                "source": analysis.analysis_source,
+            })
+        except Exception:  # noqa: BLE001 - socket gone on raw disconnect; outcome already logged
+            log.warning("outcome computed but not delivered (socket closed)")
 
     def _reset_capture(self) -> None:
         """Discard any audio buffered while the agent was busy, so the next

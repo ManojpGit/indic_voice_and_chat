@@ -29,6 +29,10 @@ class Conversation(Base):
     channel: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     disposition: Mapped[Optional[str]] = mapped_column(String(30))
+    outcome: Mapped[Optional[str]] = mapped_column(String(30))
+    summary: Mapped[Optional[str]] = mapped_column(Text)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    callback_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False))  # from CallResult.callback_datetime; stored tz-naive (UTC), like started_at/ended_at
     interest_level: Mapped[Optional[str]] = mapped_column(String(20))
     slots_data: Mapped[dict] = mapped_column(JSON, default=dict)
     pipeline_config: Mapped[dict] = mapped_column(JSON, nullable=False)

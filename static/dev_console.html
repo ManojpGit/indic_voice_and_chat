@@ -41,6 +41,12 @@
     <div class="pane">
       <h2>Dialogue state &amp; slots</h2>
       <pre id="state">—</pre>
+      <div id="outcome" style="margin-top:12px; padding:8px; border:1px solid #333; border-radius:6px; display:none;">
+        <div><b>Outcome:</b> <span id="outcomeType"></span> <span id="outcomeSource" style="color:#888;"></span></div>
+        <div style="margin-top:4px;"><b>Summary:</b> <span id="outcomeSummary"></span></div>
+        <div style="margin-top:4px;"><b>Notes:</b> <span id="outcomeNotes"></span></div>
+        <div id="outcomeCallback" style="margin-top:4px;"></div>
+      </div>
     </div>
   </div>
 
@@ -224,6 +230,15 @@ async function start() {
     } else if (msg.type === "state") {
       $("state").textContent =
         "state: " + msg.state + "\nslots: " + JSON.stringify(msg.slots, null, 2);
+    } else if (msg.type === "outcome") {
+      $("outcome").style.display = "block";
+      $("outcomeType").textContent = msg.outcome;
+      $("outcomeSource").textContent = msg.source ? "(" + msg.source + ")" : "";
+      $("outcomeSummary").textContent = msg.summary || "—";
+      $("outcomeNotes").textContent = msg.notes || "—";
+      $("outcomeCallback").textContent = msg.callback_datetime
+        ? "Callback: " + msg.callback_datetime
+        : (msg.callback_phrase ? "Callback (unresolved): " + msg.callback_phrase : "");
     } else if (msg.type === "error") {
       console.error("[devconsole] turn error:", msg.message);
       const div = document.createElement("div");
@@ -252,8 +267,27 @@ function stop() {
   $("start").textContent = "Start";
 }
 
+// Graceful end: ask the server to finalize and push the outcome while the
+// socket is still open, then let the server close it (onclose -> stop()).
+// Halts the mic immediately but keeps the ws open to receive the outcome panel.
+function endCall() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { stop(); return; }
+  running = false;  // stop streaming mic frames at once
+  if (workletNode) { try { workletNode.disconnect(); } catch (_) {} }
+  workletNode = null;
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  micStream = null;
+  agentSpeaking = false;
+  $("start").classList.remove("stop");
+  $("start").textContent = "Start";
+  setStatus("ending…");
+  ws.send(JSON.stringify({ type: "end" }));
+  // Fallback: if the server hasn't closed within 6s, force teardown.
+  setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) stop(); }, 6000);
+}
+
 $("start").onclick = async () => {
-  if (running) { stop(); return; }
+  if (running) { endCall(); return; }
   // Acquire the mic + audio context DURING the click gesture, before opening the
   // WebSocket. This ties the permission prompt to the user gesture (strict
   // browsers deny a mic request made later, from ws.onopen) and lets us surface
