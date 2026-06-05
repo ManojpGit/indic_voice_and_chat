@@ -156,6 +156,14 @@ class BrowserVoiceBridge:
                         ctrl = {}
                     if ctrl.get("type") == "barge_in":
                         self._handle_barge_in()
+                    elif ctrl.get("type") == "end":
+                        # Graceful client-initiated end: deliver the outcome while
+                        # the socket is still open, then stop the loop. break (not
+                        # continue) so exit_reason isn't overwritten by the while/else.
+                        await self._emit_outcome()
+                        self._stopped = True
+                        exit_reason = "client end"
+                        break
                     continue
             else:
                 exit_reason = "stopped (terminal)"
@@ -406,15 +414,30 @@ class BrowserVoiceBridge:
                 pass
             return
         cb = analysis.callback_datetime
-        await self._send_json({
-            "type": "outcome",
-            "outcome": analysis.outcome.value,
-            "summary": analysis.summary,
-            "notes": analysis.notes,
-            "callback_datetime": cb.isoformat() if cb else None,
-            "callback_phrase": analysis.callback_phrase,
-            "source": analysis.analysis_source,
-        })
+        # Record the outcome server-side FIRST, so it survives even when the
+        # socket is already gone (raw disconnect: tab close / crash / network
+        # drop) and the push below cannot be delivered.
+        log.info(
+            "call outcome",
+            extra={
+                "outcome": analysis.outcome.value,
+                "source": analysis.analysis_source,
+                "summary": analysis.summary[:200],
+                "callback": cb.isoformat() if cb else None,
+            },
+        )
+        try:
+            await self._send_json({
+                "type": "outcome",
+                "outcome": analysis.outcome.value,
+                "summary": analysis.summary,
+                "notes": analysis.notes,
+                "callback_datetime": cb.isoformat() if cb else None,
+                "callback_phrase": analysis.callback_phrase,
+                "source": analysis.analysis_source,
+            })
+        except Exception:  # noqa: BLE001 - socket gone on raw disconnect; outcome already logged
+            log.warning("outcome computed but not delivered (socket closed)")
 
     def _reset_capture(self) -> None:
         """Discard any audio buffered while the agent was busy, so the next

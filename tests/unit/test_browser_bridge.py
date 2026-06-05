@@ -337,3 +337,29 @@ async def test_emit_outcome_noop_when_llm_none():
     await bridge._emit_outcome()
     outcome_msgs = [m for m in (json.loads(x) for x in ws.sent_text) if m.get("type") == "outcome"]
     assert outcome_msgs == []
+
+
+@pytest.mark.asyncio
+async def test_end_control_message_emits_outcome_and_hangs_up(monkeypatch):
+    import src.api.browser_bridge as bb
+    from src.campaign.models import CallAnalysis, LeadCallOutcome
+
+    async def fake_analyze(**kwargs):
+        return CallAnalysis(outcome=LeadCallOutcome.NOT_INTERESTED, summary="ended")
+
+    monkeypatch.setattr(bb, "analyze_call", fake_analyze)
+
+    incoming = [
+        {"type": "websocket.receive", "text": json.dumps({"type": "hello", "tenant": "dev"})},
+        {"type": "websocket.receive", "text": json.dumps({"type": "end"})},
+    ]
+    ws = FakeWebSocket(incoming)
+    agent = FakeAgent()
+    bridge = _bridge(ws, agent)
+    bridge._llm = object()
+    await bridge.run()
+
+    outcome_msgs = [m for m in (json.loads(x) for x in ws.sent_text) if m.get("type") == "outcome"]
+    assert len(outcome_msgs) == 1  # emitted once on `end`, idempotent in finally
+    assert outcome_msgs[0]["outcome"] == "not_interested"
+    assert agent.hung_up is True

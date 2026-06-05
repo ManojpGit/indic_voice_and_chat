@@ -267,8 +267,27 @@ function stop() {
   $("start").textContent = "Start";
 }
 
+// Graceful end: ask the server to finalize and push the outcome while the
+// socket is still open, then let the server close it (onclose -> stop()).
+// Halts the mic immediately but keeps the ws open to receive the outcome panel.
+function endCall() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { stop(); return; }
+  running = false;  // stop streaming mic frames at once
+  if (workletNode) { try { workletNode.disconnect(); } catch (_) {} }
+  workletNode = null;
+  if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  micStream = null;
+  agentSpeaking = false;
+  $("start").classList.remove("stop");
+  $("start").textContent = "Start";
+  setStatus("ending…");
+  ws.send(JSON.stringify({ type: "end" }));
+  // Fallback: if the server hasn't closed within 6s, force teardown.
+  setTimeout(() => { if (ws && ws.readyState === WebSocket.OPEN) stop(); }, 6000);
+}
+
 $("start").onclick = async () => {
-  if (running) { stop(); return; }
+  if (running) { endCall(); return; }
   // Acquire the mic + audio context DURING the click gesture, before opening the
   // WebSocket. This ties the permission prompt to the user gesture (strict
   // browsers deny a mic request made later, from ws.onopen) and lets us surface
