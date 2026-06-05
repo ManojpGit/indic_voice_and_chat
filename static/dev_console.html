@@ -41,6 +41,12 @@
     <div class="pane">
       <h2>Dialogue state &amp; slots</h2>
       <pre id="state">—</pre>
+      <div id="outcome" style="margin-top:12px; padding:8px; border:1px solid #333; border-radius:6px; display:none;">
+        <div><b>Outcome:</b> <span id="outcomeType"></span> <span id="outcomeSource" style="color:#888;"></span></div>
+        <div style="margin-top:4px;"><b>Summary:</b> <span id="outcomeSummary"></span></div>
+        <div style="margin-top:4px;"><b>Notes:</b> <span id="outcomeNotes"></span></div>
+        <div id="outcomeCallback" style="margin-top:4px;"></div>
+      </div>
     </div>
   </div>
 
@@ -224,6 +230,15 @@ async function start() {
     } else if (msg.type === "state") {
       $("state").textContent =
         "state: " + msg.state + "\nslots: " + JSON.stringify(msg.slots, null, 2);
+    } else if (msg.type === "outcome") {
+      $("outcome").style.display = "block";
+      $("outcomeType").textContent = msg.outcome;
+      $("outcomeSource").textContent = msg.source ? "(" + msg.source + ")" : "";
+      $("outcomeSummary").textContent = msg.summary || "—";
+      $("outcomeNotes").textContent = msg.notes || "—";
+      $("outcomeCallback").textContent = msg.callback_datetime
+        ? "Callback: " + msg.callback_datetime
+        : (msg.callback_phrase ? "Callback (unresolved): " + msg.callback_phrase : "");
     } else if (msg.type === "error") {
       console.error("[devconsole] turn error:", msg.message);
       const div = document.createElement("div");
