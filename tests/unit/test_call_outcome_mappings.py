@@ -1,9 +1,13 @@
+import pytest
+
 from src.campaign.models import (
+    CallAnalysis,
     CallDisposition,
     LeadCallOutcome,
     disposition_from_outcome,
     outcome_from_telephony,
 )
+from src.config_tenant import TenantSettings
 
 
 def test_every_outcome_maps_to_a_disposition():
@@ -41,8 +45,6 @@ def test_telephony_status_unknown_returns_none():
 
 
 def test_call_analysis_defaults():
-    from src.campaign.models import CallAnalysis, LeadCallOutcome
-
     a = CallAnalysis(outcome=LeadCallOutcome.INTERESTED)
     assert a.summary == ""
     assert a.notes == ""
@@ -52,7 +54,10 @@ def test_call_analysis_defaults():
 
 
 def test_tenant_settings_has_timezone_default():
-    from src.config_tenant import TenantSettings
-
     t = TenantSettings(id="t_x", slug="x", name="X")
     assert t.timezone == "Asia/Kolkata"
+
+
+def test_tenant_settings_rejects_bad_timezone():
+    with pytest.raises(Exception):
+        TenantSettings(id="t_x", slug="x", name="X", timezone="Not/AZone")

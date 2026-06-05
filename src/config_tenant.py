@@ -55,9 +55,10 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 
 class MissingEnvError(RuntimeError):
@@ -171,6 +172,15 @@ class TenantSettings(BaseModel):
     crm: TenantCRMConfig = Field(default_factory=TenantCRMConfig)
     whatsapp: TenantWhatsAppConfig = Field(default_factory=TenantWhatsAppConfig)
     phone_numbers: list[str] = Field(default_factory=list)
+
+    @field_validator("timezone")
+    @classmethod
+    def _validate_timezone(cls, v: str) -> str:
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(f"invalid IANA timezone: {v!r}") from e
+        return v
 
     # --- secret resolution ---------------------------------------------
 

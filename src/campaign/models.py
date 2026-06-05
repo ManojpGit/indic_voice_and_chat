@@ -16,7 +16,7 @@ import csv
 import io
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -117,7 +117,7 @@ class CallAnalysis(BaseModel):
     notes: str = ""             # English; objections, preferences, next steps
     callback_datetime: Optional[datetime] = None  # tz-aware when resolved
     callback_phrase: Optional[str] = None         # raw, e.g. "kal shaam 5 baje"
-    analysis_source: str = "llm"  # "llm" | "telephony" | "fallback"
+    analysis_source: Literal["llm", "telephony", "fallback"] = "llm"
 
 
 class Lead(BaseModel):
