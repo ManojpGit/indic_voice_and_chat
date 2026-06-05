@@ -22,6 +22,7 @@ from src.campaign.models import (
     disposition_from_outcome,
     outcome_from_telephony,
 )
+from src.dialogue.response_parser import _extract_json
 from src.interfaces.llm import ILLMProvider, LLMConfig, LLMMessage
 
 log = logging.getLogger(__name__)
@@ -137,13 +138,19 @@ async def analyze_call(
         LLMMessage(role="system", content=_SYSTEM_PROMPT),
         LLMMessage(role="user", content=user_msg),
     ]
-    cfg = LLMConfig(temperature=0.2, max_tokens=512, response_format="json")
+    # 1024 (not 512) so a longer summary+notes envelope isn't truncated into
+    # invalid JSON — same reason the main turn config uses 1024.
+    cfg = LLMConfig(temperature=0.2, max_tokens=1024, response_format="json")
 
     try:
         result = await asyncio.wait_for(
             llm.generate(messages, cfg), timeout=ANALYSIS_TIMEOUT_S
         )
-        obj = json.loads(result.text)
+        # Tolerant parse: Gemini intermittently wraps JSON in ```json fences or
+        # adds prose even in JSON mode. Reuse the main turn parser's extractor.
+        obj, perr = _extract_json(result.text)
+        if obj is None:
+            raise ValueError(f"no JSON in analysis response: {perr}")
         outcome = LeadCallOutcome(obj["outcome"])
         if outcome not in CONVERSATIONAL_OUTCOMES:
             raise ValueError(f"non-conversational outcome from LLM: {outcome}")

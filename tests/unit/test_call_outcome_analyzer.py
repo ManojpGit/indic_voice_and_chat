@@ -120,3 +120,25 @@ async def test_llm_failure_falls_back_to_action():
     assert result.outcome == LeadCallOutcome.ESCALATED
     assert result.analysis_source == "fallback"
     assert "auto-derived" in result.notes
+
+
+@pytest.mark.asyncio
+async def test_fenced_json_is_parsed_not_fallback():
+    # Gemini sometimes wraps JSON in ```json fences even in JSON mode — the
+    # analyzer must still parse it (regression: raw json.loads -> JSONDecodeError
+    # -> spurious fallback, seen live).
+    fenced = (
+        "```json\n"
+        '{"outcome": "interested", "summary": "Lead is keen.", "notes": "Send link.", '
+        '"callback_datetime": null, "callback_phrase": null}\n'
+        "```"
+    )
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    result = await analyze_call(
+        transcript=TRANSCRIPT, slots={}, telephony_status=None,
+        final_action="close_positive", tenant_timezone="Asia/Kolkata",
+        now=now, llm=FakeLLM(fenced),
+    )
+    assert result.outcome == LeadCallOutcome.INTERESTED
+    assert result.analysis_source == "llm"  # NOT "fallback"
+    assert result.summary == "Lead is keen."
