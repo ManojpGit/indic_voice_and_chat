@@ -111,6 +111,20 @@ async def analyze_call(
         now = now.replace(tzinfo=tz)
     now_local = now.astimezone(tz)
 
+    unreachable = outcome_from_telephony(telephony_status)
+    if unreachable is not None:
+        canned = {
+            LeadCallOutcome.NO_ANSWER: "No answer.",
+            LeadCallOutcome.BUSY: "Line was busy.",
+            LeadCallOutcome.CALL_FAILED: "Call failed to connect.",
+            LeadCallOutcome.VOICEMAIL: "Reached voicemail.",
+        }
+        return CallAnalysis(
+            outcome=unreachable,
+            summary=canned.get(unreachable, ""),
+            analysis_source="telephony",
+        )
+
     user_msg = (
         f"NOW: {now_local.isoformat()}\nTIMEZONE: {tenant_timezone}\n"
         f"COLLECTED DATA: {json.dumps(slots, ensure_ascii=False)}\n\n"

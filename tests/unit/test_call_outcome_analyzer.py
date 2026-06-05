@@ -82,3 +82,40 @@ async def test_vague_callback_is_null_with_phrase():
     )
     assert result.callback_datetime is None
     assert result.callback_phrase == "baad mein"
+
+
+@pytest.mark.asyncio
+async def test_telephony_status_short_circuits_without_llm():
+    llm = FakeLLM("{}")
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    result = await analyze_call(
+        transcript=[], slots={}, telephony_status="busy",
+        final_action=None, tenant_timezone="Asia/Kolkata", now=now, llm=llm,
+    )
+    assert result.outcome == LeadCallOutcome.BUSY
+    assert result.analysis_source == "telephony"
+    assert llm.calls == 0
+
+
+class RaisingLLM:
+    calls = 0
+
+    async def generate(self, messages, config):
+        RaisingLLM.calls += 1
+        raise RuntimeError("boom")
+
+    async def generate_stream(self, messages, config):  # pragma: no cover
+        raise NotImplementedError
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_falls_back_to_action():
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    result = await analyze_call(
+        transcript=TRANSCRIPT, slots={}, telephony_status=None,
+        final_action="transfer", tenant_timezone="Asia/Kolkata",
+        now=now, llm=RaisingLLM(),
+    )
+    assert result.outcome == LeadCallOutcome.ESCALATED
+    assert result.analysis_source == "fallback"
+    assert "auto-derived" in result.notes
