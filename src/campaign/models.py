@@ -167,7 +167,7 @@ class CallResult(BaseModel):
     outcome: Optional[LeadCallOutcome] = None
     summary: str = ""
     notes: str = ""
-    callback_datetime: Optional[datetime] = None
+    callback_datetime: Optional[datetime] = None  # -> Conversation.callback_at (DB)
     duration_ms: int = 0
     total_turns: int = 0
     sentiment_history: list[str] = Field(default_factory=list)

@@ -121,3 +121,5 @@ def test_call_result_carries_outcome_and_summary():
     assert r.outcome == LeadCallOutcome.CALLBACK_REQUESTED
     assert r.disposition == CallDisposition.INTERESTED_CALLBACK
     assert r.summary == "Wants a callback."
+    assert r.notes == "Tomorrow eve."
+    assert r.callback_datetime is None
