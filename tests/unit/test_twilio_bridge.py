@@ -259,7 +259,7 @@ async def test_bridge_ignores_outbound_track_frames() -> None:
 
 @pytest.mark.asyncio
 async def test_records_outcome_on_hangup_when_llm_present(monkeypatch) -> None:
-    import src.api.telephony_twilio as tt
+    import src.api.outcome_recorder as orec
     from src.campaign.models import CallAnalysis, LeadCallOutcome
 
     calls = []
@@ -268,7 +268,7 @@ async def test_records_outcome_on_hangup_when_llm_present(monkeypatch) -> None:
         calls.append(kwargs)
         return CallAnalysis(outcome=LeadCallOutcome.INTERESTED, summary="s")
 
-    monkeypatch.setattr(tt, "analyze_agent_call", fake_analyze)
+    monkeypatch.setattr(orec, "analyze_agent_call", fake_analyze)
 
     agent = FakeAgent()
     ws = FakeWebSocket(incoming=[{"event": "connected"}, _start_frame(), _stop_frame()])
@@ -287,14 +287,14 @@ async def test_records_outcome_on_hangup_when_llm_present(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_no_outcome_recording_when_llm_absent(monkeypatch) -> None:
-    import src.api.telephony_twilio as tt
+    import src.api.outcome_recorder as orec
 
     calls = []
 
     async def fake_analyze(agent, **kwargs):  # pragma: no cover - must not run
         calls.append(kwargs)
 
-    monkeypatch.setattr(tt, "analyze_agent_call", fake_analyze)
+    monkeypatch.setattr(orec, "analyze_agent_call", fake_analyze)
 
     agent = FakeAgent()
     ws = FakeWebSocket(incoming=[{"event": "connected"}, _start_frame(), _stop_frame()])

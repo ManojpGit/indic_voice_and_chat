@@ -35,10 +35,10 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Optional, Protocol
 
-from src.analysis.call_outcome import analyze_agent_call
+from src.api.outcome_recorder import OutcomeRecorderMixin
+from src.interfaces.llm import ILLMProvider
 from src.pipeline.audio_utils import resample_pcm16
 from src.pipeline.vad import (
     EndpointConfig,
@@ -72,7 +72,7 @@ class ExotelBridgeConfig:
     max_idle_silence_s: float = 12.0
 
 
-class ExotelMediaBridge:
+class ExotelMediaBridge(OutcomeRecorderMixin):
     """One bridge instance per call. Drive with ``run()`` from the WS handler."""
 
     def __init__(
@@ -81,7 +81,7 @@ class ExotelMediaBridge:
         agent: _AgentLike,
         vad: VADDetector,
         config: Optional[ExotelBridgeConfig] = None,
-        llm=None,
+        llm: Optional[ILLMProvider] = None,
         tenant_timezone: str = "Asia/Kolkata",
     ) -> None:
         self._ws = websocket
@@ -172,37 +172,6 @@ class ExotelMediaBridge:
             self._agent.state, "is_terminal", False
         ):
             self._stopped.set()
-
-    async def _record_outcome(self) -> None:
-        """Analyze the finished call and record the outcome server-side. Idempotent.
-        Telephony has no live UI, so this logs the outcome (and is the hook for
-        DB persistence later)."""
-        if self._outcome_recorded or self._llm is None:
-            return
-        self._outcome_recorded = True
-        try:
-            analysis = await analyze_agent_call(
-                self._agent,
-                llm=self._llm,
-                tenant_timezone=self._tenant_timezone,
-                final_action=self._last_action,
-                now=datetime.now(timezone.utc),
-            )
-        except Exception:  # noqa: BLE001 - never let analysis break teardown
-            log.exception("call outcome analysis failed")
-            return
-        if analysis is None:
-            return
-        cb = analysis.callback_datetime
-        log.info(
-            "call outcome",
-            extra={
-                "outcome": analysis.outcome.value,
-                "source": analysis.analysis_source,
-                "summary": analysis.summary[:200],
-                "callback": cb.isoformat() if cb else None,
-            },
-        )
 
     async def _send_pcm(self, pcm16: bytes) -> None:
         """Sink for agent TTS audio — PCM16 (no μ-law conversion).

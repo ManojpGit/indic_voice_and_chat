@@ -291,7 +291,7 @@ async def test_outbound_chunk_size_is_20ms_of_pcm16() -> None:
 
 @pytest.mark.asyncio
 async def test_exotel_records_outcome_on_hangup_when_llm_present(monkeypatch) -> None:
-    import src.api.telephony_exotel as te
+    import src.api.outcome_recorder as orec
     from src.campaign.models import CallAnalysis, LeadCallOutcome
 
     calls = []
@@ -300,7 +300,7 @@ async def test_exotel_records_outcome_on_hangup_when_llm_present(monkeypatch) ->
         calls.append(kwargs)
         return CallAnalysis(outcome=LeadCallOutcome.NOT_INTERESTED, summary="s")
 
-    monkeypatch.setattr(te, "analyze_agent_call", fake_analyze)
+    monkeypatch.setattr(orec, "analyze_agent_call", fake_analyze)
 
     agent = FakeAgent()
     ws = FakeWebSocket(incoming=[{"event": "connected"}, _start_frame(), _stop_frame()])

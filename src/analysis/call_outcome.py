@@ -222,6 +222,10 @@ async def build_call_result(
     call completes: it analyzes the call (outcome + summary + notes + callback)
     and maps the outcome to the legacy ``disposition`` the orchestrator/CRM
     consume.
+
+    ``analyze_call`` never raises (it falls back internally), so in practice this
+    builder doesn't either; the orchestrator also wraps each dispatch in
+    try/except (a failed dispatch → retry), so a stray error won't lose the lead.
     """
     analysis = await analyze_call(
         transcript=transcript,
