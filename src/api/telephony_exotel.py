@@ -35,8 +35,10 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional, Protocol
 
+from src.analysis.call_outcome import analyze_agent_call
 from src.pipeline.audio_utils import resample_pcm16
 from src.pipeline.vad import (
     EndpointConfig,
@@ -79,6 +81,8 @@ class ExotelMediaBridge:
         agent: _AgentLike,
         vad: VADDetector,
         config: Optional[ExotelBridgeConfig] = None,
+        llm=None,
+        tenant_timezone: str = "Asia/Kolkata",
     ) -> None:
         self._ws = websocket
         self._agent = agent
@@ -92,6 +96,10 @@ class ExotelMediaBridge:
         self._downsample_state: Optional[tuple] = None
         self._stopped = asyncio.Event()
         self._idle_silence_ms = 0
+        self._llm = llm
+        self._tenant_timezone = tenant_timezone
+        self._last_action: Optional[str] = None
+        self._outcome_recorded = False
 
     async def run(self) -> None:
         await self._agent.start()
@@ -115,6 +123,10 @@ class ExotelMediaBridge:
                     log.info("exotel stream stopped")
                     break
         finally:
+            try:
+                await self._record_outcome()
+            except Exception:  # noqa: BLE001 - never let analysis break teardown
+                log.exception("record outcome failed")
             await self._agent.handle_hangup()
 
     async def _on_media_frame(self, media: dict) -> None:
@@ -153,11 +165,44 @@ class ExotelMediaBridge:
         captured = bytes(self._capture_buffer)
         self._capture_buffer.clear()
         self._endpoint.reset()
-        await self._agent.handle_turn(captured, self._send_pcm)
+        outcome = await self._agent.handle_turn(captured, self._send_pcm)
+        if outcome is not None:
+            self._last_action = getattr(getattr(outcome, "response", None), "action", None)
         if getattr(self._agent, "state", None) is not None and getattr(
             self._agent.state, "is_terminal", False
         ):
             self._stopped.set()
+
+    async def _record_outcome(self) -> None:
+        """Analyze the finished call and record the outcome server-side. Idempotent.
+        Telephony has no live UI, so this logs the outcome (and is the hook for
+        DB persistence later)."""
+        if self._outcome_recorded or self._llm is None:
+            return
+        self._outcome_recorded = True
+        try:
+            analysis = await analyze_agent_call(
+                self._agent,
+                llm=self._llm,
+                tenant_timezone=self._tenant_timezone,
+                final_action=self._last_action,
+                now=datetime.now(timezone.utc),
+            )
+        except Exception:  # noqa: BLE001 - never let analysis break teardown
+            log.exception("call outcome analysis failed")
+            return
+        if analysis is None:
+            return
+        cb = analysis.callback_datetime
+        log.info(
+            "call outcome",
+            extra={
+                "outcome": analysis.outcome.value,
+                "source": analysis.analysis_source,
+                "summary": analysis.summary[:200],
+                "callback": cb.isoformat() if cb else None,
+            },
+        )
 
     async def _send_pcm(self, pcm16: bytes) -> None:
         """Sink for agent TTS audio — PCM16 (no μ-law conversion).

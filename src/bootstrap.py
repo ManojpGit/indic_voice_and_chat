@@ -183,6 +183,8 @@ def make_bridge_factory(
             agent=agent,
             vad=EnergyVAD(sample_rate=16000, frame_ms=30, rms_threshold=300.0),
             config=cfg,
+            llm=llm,
+            tenant_timezone=getattr(tenant.settings, "timezone", "Asia/Kolkata"),
         )
 
     return factory
@@ -227,6 +229,10 @@ class _AgentBridge(TwilioMediaBridge):
                     log.info("twilio stream stopped")
                     break
         finally:
+            try:
+                await self._record_outcome()
+            except Exception:  # noqa: BLE001 - never let analysis break teardown
+                log.exception("record outcome failed")
             await self._agent.handle_hangup()
 
 
@@ -301,6 +307,8 @@ def make_exotel_bridge_factory(
             agent=agent,
             vad=EnergyVAD(sample_rate=16000, frame_ms=30, rms_threshold=300.0),
             config=cfg,
+            llm=llm,
+            tenant_timezone=getattr(tenant.settings, "timezone", "Asia/Kolkata"),
         )
 
     return factory
@@ -343,4 +351,8 @@ class _ExotelAgentBridge(ExotelMediaBridge):
                     log.info("exotel stream stopped")
                     break
         finally:
+            try:
+                await self._record_outcome()
+            except Exception:  # noqa: BLE001 - never let analysis break teardown
+                log.exception("record outcome failed")
             await self._agent.handle_hangup()

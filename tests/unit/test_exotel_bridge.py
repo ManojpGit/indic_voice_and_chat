@@ -287,3 +287,30 @@ async def test_outbound_chunk_size_is_20ms_of_pcm16() -> None:
     for m in ws.sent:
         decoded = base64.b64decode(m["media"]["payload"])
         assert len(decoded) == 320
+
+
+@pytest.mark.asyncio
+async def test_exotel_records_outcome_on_hangup_when_llm_present(monkeypatch) -> None:
+    import src.api.telephony_exotel as te
+    from src.campaign.models import CallAnalysis, LeadCallOutcome
+
+    calls = []
+
+    async def fake_analyze(agent, **kwargs):
+        calls.append(kwargs)
+        return CallAnalysis(outcome=LeadCallOutcome.NOT_INTERESTED, summary="s")
+
+    monkeypatch.setattr(te, "analyze_agent_call", fake_analyze)
+
+    agent = FakeAgent()
+    ws = FakeWebSocket(incoming=[{"event": "connected"}, _start_frame(), _stop_frame()])
+    bridge = ExotelMediaBridge(
+        websocket=ws,
+        agent=agent,
+        vad=EnergyVAD(sample_rate=16000, frame_ms=30, rms_threshold=300.0),
+        llm=object(),
+        tenant_timezone="Asia/Kolkata",
+    )
+    await bridge.run()
+    assert len(calls) == 1
+    assert agent.hangup_called is True
