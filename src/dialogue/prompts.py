@@ -276,6 +276,11 @@ def build_voicebot_system_prompt(
         "- Never invent facts about the company or its products.\n"
         "- If the user asks if you are AI, answer honestly.\n"
         "- If the user asks to be removed, set action=close_negative and acknowledge.\n"
+        "- Callback: do NOT set action=schedule_callback until you have a SPECIFIC "
+        "day and time. If the user is vague ('kal', 'baad mein', 'later'), keep "
+        "action=continue, ask for the exact time (e.g. 'Kal kis samay call karoon?'), "
+        "and save it in updated_slots.callback_time. Only schedule_callback once a "
+        "concrete time is confirmed.\n"
         "- Set action=end only when the conversation is genuinely over."
     )
 
