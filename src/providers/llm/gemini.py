@@ -11,13 +11,26 @@ prompt declares the language directive (see ``build_voicebot_system_prompt``).
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Callable, Optional
 
 from src.interfaces.llm import ILLMProvider, LLMConfig, LLMMessage, LLMResult
 
 
+log = logging.getLogger(__name__)
+
 DEFAULT_MODEL = "gemini-2.0-flash"
+
+# Gemini intermittently returns transient backend errors — most notably
+# ``500 INTERNAL`` ("An internal error has occurred. Please retry...") — even
+# for well-formed requests. Google's own error body tells callers to retry, so
+# we transparently retry these before any audio is spoken. A live turn must not
+# die on a provider blip.
+_RETRIABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_MAX_RETRIES = 2  # total attempts = 1 + _MAX_RETRIES
+_BACKOFF_BASE_S = 0.4
 
 
 class GeminiLLMAdapter(ILLMProvider):
@@ -75,6 +88,31 @@ class GeminiLLMAdapter(ILLMProvider):
             cfg["response_mime_type"] = "application/json"
         return cfg
 
+    @staticmethod
+    async def _call_with_retry(fn: Callable[[], Any], *, what: str) -> Any:
+        """Await ``fn()``, retrying transient 5xx/429 errors with backoff.
+
+        Only errors whose HTTP status is in ``_RETRIABLE_STATUS`` are retried;
+        everything else (and ``CancelledError``, which is a ``BaseException``)
+        propagates immediately. The caller must ensure no side effects have been
+        committed yet — for streaming, that means no token has been yielded.
+        """
+        attempt = 0
+        while True:
+            try:
+                return await fn()
+            except Exception as exc:  # noqa: BLE001 - re-raised unless retriable
+                code = getattr(exc, "code", None)
+                if code in _RETRIABLE_STATUS and attempt < _MAX_RETRIES:
+                    attempt += 1
+                    log.warning(
+                        "gemini transient %s on %s; retry %d/%d",
+                        code, what, attempt, _MAX_RETRIES,
+                    )
+                    await asyncio.sleep(_BACKOFF_BASE_S * attempt)
+                    continue
+                raise
+
     # --- Public API ----------------------------------------------------
 
     async def generate(
@@ -87,10 +125,13 @@ class GeminiLLMAdapter(ILLMProvider):
         if system:
             gen_config["system_instruction"] = system
 
-        response = await self._client.aio.models.generate_content(
-            model=config.model or self._default_model,
-            contents=contents,
-            config=gen_config,
+        response = await self._call_with_retry(
+            lambda: self._client.aio.models.generate_content(
+                model=config.model or self._default_model,
+                contents=contents,
+                config=gen_config,
+            ),
+            what="generate",
         )
         text = self._extract_text(response)
         usage = self._extract_usage(response)
@@ -111,13 +152,35 @@ class GeminiLLMAdapter(ILLMProvider):
         gen_config = self._build_config(config)
         if system:
             gen_config["system_instruction"] = system
+        model = config.model or self._default_model
 
-        stream = await self._client.aio.models.generate_content_stream(
-            model=config.model or self._default_model,
-            contents=contents,
-            config=gen_config,
+        # Transient 5xx can surface either when opening the stream or on the
+        # first chunk, so the retry must cover both — but only up to the first
+        # yielded token, after which audio may already be playing and a retry
+        # would re-speak. Re-opening starts a fresh stream each attempt.
+        async def _open_and_first() -> tuple[Any, Any]:
+            stream = await self._client.aio.models.generate_content_stream(
+                model=model,
+                contents=contents,
+                config=gen_config,
+            )
+            agen = stream.__aiter__()
+            try:
+                first = await agen.__anext__()
+            except StopAsyncIteration:
+                first = None
+            return agen, first
+
+        agen, first = await self._call_with_retry(
+            _open_and_first, what="generate_stream",
         )
-        async for chunk in stream:
+
+        if first is None:
+            return
+        text = self._extract_text(first)
+        if text:
+            yield text
+        async for chunk in agen:
             text = self._extract_text(chunk)
             if text:
                 yield text

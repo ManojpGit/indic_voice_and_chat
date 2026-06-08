@@ -167,6 +167,111 @@ async def test_generate_stream_skips_empty_chunks() -> None:
     assert tokens == ["hello"]
 
 
+# --- Transient 5xx retry ------------------------------------------------
+
+
+class _FakeAPIError(Exception):
+    """Mimics google.genai's APIError: carries an HTTP ``code``."""
+
+    def __init__(self, code: int) -> None:
+        super().__init__(f"{code} transient")
+        self.code = code
+
+
+def _flaky_client(*, fail_times: int, code: int,
+                  stream_chunks: list[Any] | None = None,
+                  generate_return: Any = None):
+    """Client that raises ``code`` for the first ``fail_times`` calls, then succeeds."""
+    calls = {"stream": 0, "generate": 0}
+
+    async def _gen():
+        for c in stream_chunks or []:
+            yield c
+
+    async def _start_stream(**kwargs):
+        if calls["stream"] < fail_times:
+            calls["stream"] += 1
+            raise _FakeAPIError(code)
+        calls["stream"] += 1
+        return _gen()
+
+    async def _do_generate(**kwargs):
+        if calls["generate"] < fail_times:
+            calls["generate"] += 1
+            raise _FakeAPIError(code)
+        calls["generate"] += 1
+        return generate_return
+
+    models = SimpleNamespace(
+        generate_content=AsyncMock(side_effect=_do_generate),
+        generate_content_stream=AsyncMock(side_effect=_start_stream),
+    )
+    client = SimpleNamespace(aio=SimpleNamespace(models=models))
+    return client, calls
+
+
+@pytest.fixture(autouse=True)
+def _no_backoff_sleep(monkeypatch):
+    """Keep retry tests fast — skip the real backoff delay."""
+    import src.providers.llm.gemini as gemini_mod
+    monkeypatch.setattr(gemini_mod.asyncio, "sleep", AsyncMock())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [429, 500, 503])
+async def test_generate_stream_retries_transient_then_succeeds(code) -> None:
+    client, calls = _flaky_client(
+        fail_times=1, code=code, stream_chunks=[_response("ok")],
+    )
+    adapter = GeminiLLMAdapter({"client": client})
+    tokens = [t async for t in adapter.generate_stream(
+        [LLMMessage(role="user", content="hi")], LLMConfig(),
+    )]
+    assert tokens == ["ok"]
+    assert calls["stream"] == 2  # one failure + one success
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_raises_after_exhausting_retries() -> None:
+    client, calls = _flaky_client(
+        fail_times=99, code=500, stream_chunks=[_response("never")],
+    )
+    adapter = GeminiLLMAdapter({"client": client})
+    with pytest.raises(_FakeAPIError):
+        async for _ in adapter.generate_stream(
+            [LLMMessage(role="user", content="hi")], LLMConfig(),
+        ):
+            pass
+    assert calls["stream"] == 3  # 1 initial + 2 retries
+
+
+@pytest.mark.asyncio
+async def test_generate_stream_does_not_retry_non_retriable() -> None:
+    client, calls = _flaky_client(
+        fail_times=99, code=400, stream_chunks=[_response("x")],
+    )
+    adapter = GeminiLLMAdapter({"client": client})
+    with pytest.raises(_FakeAPIError):
+        async for _ in adapter.generate_stream(
+            [LLMMessage(role="user", content="hi")], LLMConfig(),
+        ):
+            pass
+    assert calls["stream"] == 1  # 400 is not retried
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_transient_then_succeeds() -> None:
+    client, calls = _flaky_client(
+        fail_times=1, code=500, generate_return=_response('{"ok": 1}'),
+    )
+    adapter = GeminiLLMAdapter({"client": client})
+    result = await adapter.generate(
+        [LLMMessage(role="user", content="hi")], LLMConfig(),
+    )
+    assert result.text == '{"ok": 1}'
+    assert calls["generate"] == 2
+
+
 # --- Construction ------------------------------------------------------
 
 
