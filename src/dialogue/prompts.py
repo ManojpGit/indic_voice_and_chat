@@ -273,6 +273,12 @@ def build_voicebot_system_prompt(
     parts.append(
         "Rules:\n"
         "- Keep `response_text` concise (1-2 sentences) — this is voice, not chat.\n"
+        "- Begin every reply with a SHORT first sentence (about 2-5 words) — a brief, "
+        "natural acknowledgment that ends in a sentence boundary — and THEN continue "
+        "with any detail or question. This lets your voice start playing sooner. "
+        "VARY this opener across turns so it never sounds scripted (e.g. rotate among "
+        "जी, अच्छा, बिल्कुल, समझ गई, हाँ, ठीक है). Skip the opener only when the whole "
+        "reply is already that short.\n"
         "- Never invent facts about the company or its products.\n"
         "- If the user asks if you are AI, answer honestly.\n"
         "- If the user asks to be removed, set action=close_negative and acknowledge.\n"
