@@ -297,22 +297,29 @@ class BrowserVoiceBridge:
         Wrapped so a consumer crash is logged rather than silently killing the
         background task (which would wedge the turn loop with no trace).
         """
+        last_interim_t = None
         try:
             async for ev in session.events():
                 if self._stopped:
                     return
                 if ev.type == "interim":
+                    last_interim_t = time.monotonic()
                     await self._send_json(
                         {"type": "partial", "role": "user", "text": ev.text}
                     )
                 elif ev.type == "endpoint":
                     if self._agent_busy or not ev.text.strip():
                         continue
-                    await self._dispatch_text_turn(ev.text)
+                    gap_ms = (
+                        int((time.monotonic() - last_interim_t) * 1000)
+                        if last_interim_t is not None else None
+                    )
+                    last_interim_t = None
+                    await self._dispatch_text_turn(ev.text, endpoint_gap_ms=gap_ms)
         except Exception:  # noqa: BLE001 - never let the consumer die silently
             log.exception("stream event consumer crashed")
 
-    async def _dispatch_text_turn(self, text: str) -> None:
+    async def _dispatch_text_turn(self, text: str, endpoint_gap_ms: int | None = None) -> None:
         """Run one turn from an already-transcribed utterance (streaming path)."""
         self._agent_busy = True
         self._cancel_event = asyncio.Event()
@@ -347,6 +354,7 @@ class BrowserVoiceBridge:
             "browser turn (stream)",
             extra={
                 "user_text": (outcome.pipeline.user_text or "")[:80],
+                "endpoint_gap_ms": endpoint_gap_ms,
                 "llm_ttft_ms": m.llm_ttft_ms,
                 "llm_total_ms": m.llm_total_ms,
                 "tts_first_ms": m.tts_first_chunk_ms,
