@@ -150,6 +150,63 @@ async def test_barge_in_clears_playback_gate():
     assert bridge._cancel_event.is_set()
 
 
+# --- stream reopen on unexpected drop (fix for "stuck in listening") ----
+
+class _DropThenProvider:
+    """open_stream hands out queued sessions; raises once exhausted."""
+    def __init__(self, sessions):
+        self._sessions = list(sessions)
+        self.opens = 0
+
+    async def open_stream(self, config):
+        self.opens += 1
+        if not self._sessions:
+            raise RuntimeError("no more sessions")
+        return self._sessions.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_reopens_after_unexpected_drop(monkeypatch):
+    import src.api.browser_bridge as bb
+    monkeypatch.setattr(bb, "_STREAM_REOPEN_BACKOFF_S", 0)  # keep the test fast
+    s1 = _ScriptedSession([STTStreamEvent(type="endpoint", text="पहला")])
+    s2 = _ScriptedSession([STTStreamEvent(type="endpoint", text="दूसरा")])
+    prov = _DropThenProvider([s2])  # only the reopen target; s1 is the initial session
+    bridge = BrowserVoiceBridge(
+        websocket=_FakeWS(),
+        agent=_FakeAgent(),
+        vad=EnergyVAD(sample_rate=16000, frame_ms=30),
+        config=BrowserBridgeConfig(),
+        stream_provider=prov,
+    )
+    bridge._stream_session = s1
+    await bridge._run_stream_consumer()
+    # s1 dropped after its event -> reopened to s2 and kept consuming
+    assert bridge._agent.text_turns == ["पहला", "दूसरा"]
+    assert prov.opens >= 2          # reopened at least once
+    assert s1.closed                # old session closed on reopen
+    assert bridge._stream_session is None  # gave up cleanly once exhausted
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_stops_without_reopen_when_call_ended(monkeypatch):
+    import src.api.browser_bridge as bb
+    monkeypatch.setattr(bb, "_STREAM_REOPEN_BACKOFF_S", 0)
+    s1 = _ScriptedSession([])
+    prov = _DropThenProvider([s1, _ScriptedSession([])])
+    bridge = BrowserVoiceBridge(
+        websocket=_FakeWS(),
+        agent=_FakeAgent(),
+        vad=EnergyVAD(sample_rate=16000, frame_ms=30),
+        config=BrowserBridgeConfig(),
+        stream_provider=prov,
+    )
+    bridge._stream_session = s1
+    bridge._stopped = True  # call already ending
+    await bridge._run_stream_consumer()
+    assert prov.opens == 0  # no reopen attempted when stopped
+
+
 def test_build_streaming_provider_from_tenant():
     from types import SimpleNamespace
     from src.api.dev_console import _build_stream_provider

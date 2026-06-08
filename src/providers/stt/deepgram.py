@@ -203,7 +203,15 @@ async def _default_connector(url: str, headers: dict[str, str]) -> Any:
         raise RuntimeError(
             "DeepgramSTTAdapter requires 'websockets' (install deepgram-sdk)."
         ) from e
+    # A more tolerant ping_timeout (default 20s) avoids the client closing the
+    # socket with 1011 "keepalive ping timeout" during quiet stretches or when
+    # the event loop is briefly busy with LLM/TTS work. The bridge also reopens
+    # on any drop, so this just reduces how often that has to happen.
     try:
-        return await websockets.connect(url, additional_headers=headers)
+        return await websockets.connect(
+            url, additional_headers=headers, ping_timeout=60, close_timeout=5
+        )
     except TypeError:  # pragma: no cover - older websockets
-        return await websockets.connect(url, extra_headers=headers)
+        return await websockets.connect(
+            url, extra_headers=headers, ping_timeout=60, close_timeout=5
+        )

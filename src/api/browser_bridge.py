@@ -37,6 +37,12 @@ BROWSER_SAMPLE_RATE = 16000
 # Chunk size for outbound PCM frames (bytes). 8 KB ~= 256 ms @16 kHz PCM16.
 _SEND_CHUNK = 8192
 
+# Streaming-STT resilience: if Deepgram drops the socket mid-call, reopen it
+# rather than wedging the turn loop. Backoff + cap guard against a tight spin
+# when the upstream is persistently unavailable.
+_STREAM_REOPEN_BACKOFF_S = 0.3
+_MAX_STREAM_REOPENS = 10
+
 
 @dataclass
 class BrowserBridgeConfig:
@@ -128,9 +134,7 @@ class BrowserVoiceBridge:
                     self._stream_session = await self._stream_provider.open_stream(
                         STTConfig(language="hi", sample_rate=self._config.pcm_sample_rate)
                     )
-                    stream_task = asyncio.create_task(
-                        self._consume_stream_events(self._stream_session)
-                    )
+                    stream_task = asyncio.create_task(self._run_stream_consumer())
                     log.info("browser bridge: deepgram streaming session open")
                 except Exception as e:  # noqa: BLE001 - fall back to batch
                     log.warning("streaming STT open failed (%s); using batch VAD", e)
@@ -297,6 +301,46 @@ class BrowserVoiceBridge:
             return
         self._reset_capture()  # drop audio captured while the agent was busy
         await self._send_json({"type": "status", "status": "listening"})
+
+    async def _run_stream_consumer(self) -> None:
+        """Consume streaming-STT events, reopening the upstream if it drops.
+
+        Deepgram can close the socket mid-call (e.g. a WebSocket keepalive-ping
+        timeout). When that happens ``events()`` simply ends; without reopening,
+        the turn loop would wedge in "listening" forever. So we loop: consume
+        until the session ends, and if the call is still live, open a fresh
+        session and keep going (with backoff + a cap to avoid a tight reopen
+        spin if the upstream is persistently unavailable).
+        """
+        from src.interfaces.stt import STTConfig
+        reopens = 0
+        while not self._stopped and self._stream_session is not None:
+            await self._consume_stream_events(self._stream_session)
+            if self._stopped:
+                return
+            # events() returned while the call is live => the upstream dropped us.
+            reopens += 1
+            if reopens > _MAX_STREAM_REOPENS:
+                log.warning("deepgram dropped repeatedly; falling back to batch VAD")
+                self._stream_session = None
+                return
+            try:
+                await self._stream_session.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(_STREAM_REOPEN_BACKOFF_S)
+            if self._stopped:
+                return
+            try:
+                self._stream_session = await self._stream_provider.open_stream(
+                    STTConfig(language="hi", sample_rate=self._config.pcm_sample_rate)
+                )
+                log.info("browser bridge: deepgram stream reopened after drop",
+                         extra={"reopen": reopens})
+            except Exception as e:  # noqa: BLE001
+                log.warning("deepgram reopen failed (%s); falling back to batch VAD", e)
+                self._stream_session = None
+                return
 
     async def _consume_stream_events(self, session) -> None:
         """Drain streaming-STT events: partials -> console, endpoint -> dispatch.
