@@ -224,7 +224,14 @@ class BrowserVoiceBridge:
         # the mic while the agent speaks; the _agent_busy gate is belt-and-braces
         # so the agent's own audio is never streamed to the recognizer.
         if self._stream_session is not None:
-            if self._agent_busy:
+            # Don't feed the recognizer while the agent is generating a reply
+            # (_agent_busy) OR while its audio is still playing on the client
+            # (now < _play_until). Otherwise the agent's own voice (echo) reaches
+            # Deepgram as a continuous audio stream, which prevents it from
+            # detecting an utterance-end gap — endpointing then stalls for many
+            # seconds after the reply (the "stuck in listening" symptom), only
+            # recovering once a real silence finally appears.
+            if self._agent_busy or time.monotonic() < self._play_until:
                 return
             try:
                 await self._stream_session.send(pcm16)
@@ -394,6 +401,10 @@ class BrowserVoiceBridge:
         if self._cancel_event is not None:
             self._cancel_event.set()
         self._agent_busy = False
+        # Playback was cut off by the interruption, so clear the playback gate —
+        # otherwise the user's interrupting speech would be dropped as "echo"
+        # until the cancelled reply's original end time.
+        self._play_until = 0.0
         log.info("barge-in: cancelling current turn")
 
     async def _emit_outcome(self) -> None:
