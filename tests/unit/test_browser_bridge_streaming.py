@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -198,3 +199,17 @@ async def test_dispatch_arms_then_disarms_barge():
     barge = [m for m in bridge._ws.sent_json if m.get("type") == "barge"]
     assert barge[0] == {"type": "barge", "armed": True}
     assert barge[-1] == {"type": "barge", "armed": False}
+
+
+@pytest.mark.asyncio
+async def test_endpoint_gap_ms_logged(caplog):
+    bridge, session = _bridge([
+        STTStreamEvent(type="interim", text="haan"),
+        STTStreamEvent(type="endpoint", text="haan ji boliye"),
+    ])
+    with caplog.at_level(logging.INFO):
+        await bridge._consume_stream_events(session)
+    recs = [r for r in caplog.records if r.message == "browser turn (stream)"]
+    assert recs, "no 'browser turn (stream)' log emitted"
+    gap = getattr(recs[0], "endpoint_gap_ms", None)
+    assert gap is not None and gap >= 0
