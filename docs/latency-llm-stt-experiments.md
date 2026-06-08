@@ -177,3 +177,23 @@ The in-turn numbers (~2.5s first-audio, ~4.7s total) are **essentially identical
 - **Metrics:** server log lines `"browser turn"` (batch) and `"browser turn (stream)"` (streaming) carry `stt_ms / llm_ttft_ms / llm_total_ms / tts_first_ms / total_ms / action / user_text / agent_text`.
 - **Keys (gitignored `.env`):** `TENANT_DEV_GEMINI_KEY`, `TENANT_DEV_ANTHROPIC_KEY`, `TENANT_DEV_DEEPGRAM_KEY`, `TENANT_DEV_GROQ_KEY`, `TENANT_DEV_SARVAM_KEY`.
 - **Run the console:** `VOX_DEV_CONSOLE=1 .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8765 --env-file .env`, then open `/dev/voice`.
+
+---
+
+## Experiment 4 — Sarvam native streaming TTS (spike, 2026-06-08)
+
+**Goal:** can Sarvam's streaming TTS shave real time-to-first-word with zero quality risk (same audio, just streamed)? (Lever B of the code-only speed effort; spec `docs/superpowers/specs/2026-06-08-speed-code-only-design.md`.)
+
+**Finding:** Sarvam DOES offer native streaming TTS — WebSocket `wss://api.sarvam.ai/text-to-speech/ws` (header `Api-Subscription-Key`; `config`/`text`/`flush` messages; `audio` messages carry base64). `output_audio_codec: linear16` at `speech_sample_rate: 16000` returns raw PCM16 identical to the one-shot path (drop-in format). Verified live with `TENANT_DEV_SARVAM_KEY`, hi-IN.
+
+**Measured (representative Hindi sentence, ~199 KB PCM):**
+
+| Method | time-to-first-chunk | chunks |
+|---|---|---|
+| one-shot `synthesize()` | 1155 ms | — |
+| stream `linear16` @16k | 1062 ms | **1** |
+| stream `mp3` | 753 ms | 1 (compressed, not usable as PCM) |
+
+**Decision: NO-GO under the pure-safe constraint.** Sending a complete sentence + `flush` yields a **single chunk** at ~the same latency as one-shot — no first-chunk advantage from a safe drop-in swap. The streaming win only appears if **text is fed incrementally** (stream LLM tokens straight into the Sarvam WS so it synthesizes sub-sentence pieces overlapping LLM generation). That is sub-sentence synthesis — the **prosody risk (Lever C)** explicitly excluded from this effort. So there is no zero-quality-risk latency win here today.
+
+**Consequence:** code-only speed work concludes with **Lever A only** (the `endpoint_gap_ms` metric, shipped). The remaining real latency levers are the **deferred Mumbai deploy** (~400ms TTS network) and — only if the prosody tradeoff is later accepted — **token-streaming LLM→Sarvam-WS** (overlap LLM+TTS; bounded by LLM token rate; needs A/B + listen test). Both are future efforts, not pure-safe.
