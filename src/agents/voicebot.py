@@ -217,7 +217,13 @@ class VoiceBotAgent(BaseAgent):
             self.session.sentiment_history.append(response.sentiment)
 
         if response.action in _ESCALATION_ACTIONS:
+            # RESPONDING -> ESCALATING -> ENDED. We complete the escalation
+            # immediately: the agent's conversational role is done (the actual
+            # transfer/callback is handled downstream from the disposition), and
+            # leaving the agent in ESCALATING would crash the next turn dispatch
+            # ("handle_turn_text called from escalating, expected listening").
             await self.state.fire(Event.ESCALATION_REQUESTED)
+            await self.state.fire(Event.ESCALATION_COMPLETE)
         elif response.action in _END_ACTIONS:
             await self.state.fire(Event.RESPONSE_DELIVERED)
             await self.state.fire(Event.HANGUP)

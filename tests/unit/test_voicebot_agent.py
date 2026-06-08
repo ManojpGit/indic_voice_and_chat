@@ -193,7 +193,10 @@ async def test_handle_turn_with_transfer_action_escalates() -> None:
     agent = _make_agent(engine)
     await agent.start()
     await agent.handle_turn(b"\x00", _drop_sink)
-    assert agent.state.state is State.ESCALATING
+    # Escalation completes to ENDED (terminal) — the agent's role is done and
+    # leaving it in ESCALATING would crash the next turn dispatch.
+    assert agent.state.state is State.ENDED
+    assert agent.state.is_terminal is True
 
 
 @pytest.mark.asyncio
