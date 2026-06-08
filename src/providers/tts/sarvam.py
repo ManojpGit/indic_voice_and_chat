@@ -17,7 +17,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from src.interfaces.tts import ITTSProvider, TTSConfig, TTSResult
-from src.pipeline.text_normalize import apply_pronunciations
+from src.pipeline.text_normalize import apply_pronunciations, normalize_currency
 
 
 SARVAM_BASE_URL = "https://api.sarvam.ai"
@@ -64,7 +64,9 @@ class SarvamTTSAdapter(ITTSProvider):
         }
 
     async def synthesize(self, text: str, config: TTSConfig) -> TTSResult:
-        # Rewrite English/brand words Sarvam mispronounces into Devanagari.
+        # Speak currency amounts (₹100 / Rs 100 -> "100 रुपये") and rewrite
+        # English/brand words Sarvam mispronounces into Devanagari.
+        text = normalize_currency(text)
         text = apply_pronunciations(text)
         body: dict[str, Any] = {
             "inputs": [text],

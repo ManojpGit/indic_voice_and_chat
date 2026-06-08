@@ -38,7 +38,9 @@ pipeline:
     provider: deepgram
     model: nova-2          # nova-2 hi validated; nova-3 multi also works
     language: hi
-    endpointing: 300       # ms of trailing silence -> speech_final (tune live)
+    endpointing: 200       # ms of trailing silence -> speech_final (lowered from 300:
+                           # measured endpoint gap hit the 1000ms UtteranceEnd fallback
+                           # on several turns; 200 finalizes sooner. Raise if it cuts users off.)
     utterance_end_ms: 1000
     api_key_env: TENANT_DEV_DEEPGRAM_KEY
 

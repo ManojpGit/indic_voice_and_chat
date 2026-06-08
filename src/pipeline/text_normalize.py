@@ -59,3 +59,16 @@ def apply_pronunciations(text: str, extra: dict[str, str] | None = None) -> str:
         r"\b(" + "|".join(re.escape(k) for k in keys) + r")\b", re.IGNORECASE
     )
     return pattern.sub(lambda m: lower[m.group(0).lower()], text)
+
+
+# Currency: Sarvam TTS doesn't vocalize the ₹ symbol or a bare "Rs", so amounts
+# like "₹100" / "Rs 100" get dropped. Rewrite to spoken Hindi: "100 रुपये".
+_CURRENCY_RE = re.compile(r"(?:₹|\bRs\.?)\s*([\d][\d,]*)", re.IGNORECASE)
+
+
+def normalize_currency(text: str) -> str:
+    """Rewrite ``₹100`` / ``Rs 100`` / ``Rs. 1,000`` to ``100 रुपये`` so the
+    amount is actually spoken. Spelled-out forms (``100 रुपये``) are untouched."""
+    if not text:
+        return text
+    return _CURRENCY_RE.sub(lambda m: f"{m.group(1).replace(',', '')} रुपये", text)
