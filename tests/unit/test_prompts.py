@@ -53,6 +53,15 @@ def test_voicebot_prompt_includes_all_sections() -> None:
     assert '"updated_slots"' in prompt
 
 
+def test_voicebot_prompt_instructs_short_first_sentence() -> None:
+    # Latency lever: lead each reply with a short, varied opener so TTS starts
+    # sooner (see docs/superpowers/specs/2026-06-08-terser-replies-design.md).
+    script = VoiceBotScript.from_campaign_yaml(SCRIPT)
+    prompt = build_voicebot_system_prompt(script, SlotSchema())
+    assert "SHORT first sentence" in prompt
+    assert "VARY this opener" in prompt
+
+
 def test_voicebot_prompt_mentions_required_slots_with_marker() -> None:
     script = VoiceBotScript.from_campaign_yaml(SCRIPT)
     schema = SlotSchema.from_campaign_yaml(yaml.safe_load(SLOT_YAML))
