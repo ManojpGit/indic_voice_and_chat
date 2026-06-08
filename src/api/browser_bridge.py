@@ -309,6 +309,7 @@ class BrowserVoiceBridge:
                     )
                 elif ev.type == "endpoint":
                     if self._agent_busy or not ev.text.strip():
+                        last_interim_t = None
                         continue
                     gap_ms = (
                         int((time.monotonic() - last_interim_t) * 1000)
