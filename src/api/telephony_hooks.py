@@ -328,17 +328,21 @@ async def stringee_event(tenant_slug: str, request: Request, call_id: str | None
 @router.get("/stringee/audio/{token}")
 async def stringee_audio(token: str, call_id: str | None = None):
     """Serve a hosted reply/opening WAV for Stringee's `play` to fetch."""
+    wav = None
     if call_id:
         bridge = registry.get(call_id)
         if bridge is not None:
             wav = bridge.audio.get(token)
+    if wav is None:
+        # Stringee may fetch without our call_id query: scan live calls.
+        for b in registry.iter_bridges():
+            wav = b.audio.get(token)
             if wav is not None:
-                return Response(content=wav, media_type="audio/wav")
-    # Stringee may fetch without our call_id query: scan live calls.
-    for b in registry.iter_bridges():
-        wav = b.audio.get(token)
-        if wav is not None:
-            return Response(content=wav, media_type="audio/wav")
+                break
+    log.info("stringee audio fetch", extra={"token": token, "call_id": call_id,
+             "found": wav is not None, "bytes": len(wav) if wav else 0})
+    if wav is not None:
+        return Response(content=wav, media_type="audio/wav")
     return Response(status_code=404)
 
 
