@@ -48,7 +48,7 @@ _SYSTEM_PROMPT = """You analyze a finished sales/outreach phone call and classif
 Return ONLY a JSON object with these keys:
 - "outcome": one of ["interested", "callback_requested", "not_interested", "refused", "escalated", "angry_hostile"]
 - "summary": 2-3 sentence recap of the call, in ENGLISH
-- "notes": actionable observations (objections, preferences, next steps), in ENGLISH
+- "notes": actionable observations (objections, preferences, next steps), in ENGLISH — at most 2 short sentences
 - "callback_datetime": ISO-8601 datetime string in the given timezone if the lead asked to be called back at a resolvable time, else null
 - "callback_phrase": the lead's raw words about timing (e.g. "kal shaam 5 baje"), else null
 
@@ -61,7 +61,8 @@ Outcome guidance:
 - angry_hostile: abusive, threatening, or very hostile.
 
 Resolve relative times ("kal", "Monday", "do din baad") against NOW in the given TIMEZONE.
-Write summary and notes in English even though the call is in Hindi/Hinglish."""
+Write summary and notes in English even though the call is in Hindi/Hinglish.
+Keep the whole reply brief and well under 120 words so the JSON always completes."""
 
 
 def _render_transcript(transcript: list[LLMMessage]) -> str:
@@ -138,9 +139,10 @@ async def analyze_call(
         LLMMessage(role="system", content=_SYSTEM_PROMPT),
         LLMMessage(role="user", content=user_msg),
     ]
-    # 1024 (not 512) so a longer summary+notes envelope isn't truncated into
-    # invalid JSON — same reason the main turn config uses 1024.
-    cfg = LLMConfig(temperature=0.2, max_tokens=1024, response_format="json")
+    # Headroom so the summary+notes envelope always completes as valid JSON.
+    # 1024 was observed truncating mid-"notes" (an unterminated string -> parse
+    # failure -> wrong fallback outcome); the prompt now also caps output length.
+    cfg = LLMConfig(temperature=0.2, max_tokens=1536, response_format="json")
 
     try:
         result = await asyncio.wait_for(
