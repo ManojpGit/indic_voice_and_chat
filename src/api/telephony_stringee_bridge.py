@@ -115,6 +115,8 @@ class AudioStore:
 # Agent reply actions that end the call.
 _TERMINAL_ACTIONS = {"end", "close_positive", "close_negative"}
 _REPROMPT_TEXT = "Maaf kijiye, dobara boliye?"
+# PSTN telephony is 8 kHz; serve play audio at 8 kHz so Stringee can play it.
+_PLAY_SAMPLE_RATE = 8000
 
 Fetch = Callable[[str], Awaitable[bytes]]
 
@@ -152,8 +154,13 @@ class StringeeIvrBridge(OutcomeRecorderMixin):
         return f"{self._base}/event/{self._slug}?call_id={self.call_id}"
 
     def _host(self, pcm16: bytes) -> str:
-        wav = pcm16_to_wav(pcm16, self._rate)
+        # Serve 8 kHz WAV: Stringee (PSTN telephony) plays 8 kHz; a 16 kHz file
+        # often won't play. Sarvam renders at self._rate (16 kHz) so downsample.
+        pcm8 = resample_pcm16(pcm16, self._rate, _PLAY_SAMPLE_RATE)
+        wav = pcm16_to_wav(pcm8, _PLAY_SAMPLE_RATE)
         token = self.audio.put(wav)
+        log.info("stringee hosted audio", extra={"call_id": self.call_id,
+                 "token": token, "pcm_in": len(pcm16), "wav_out": len(wav)})
         return f"{self._base}/audio/{token}"
 
     # -- lifecycle --
