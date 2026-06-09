@@ -13,6 +13,16 @@ import logging
 import secrets
 import time
 import wave
+from collections.abc import Awaitable, Callable
+
+from src.api.outcome_recorder import OutcomeRecorderMixin
+from src.api.telephony_stringee import (
+    answer_scco,
+    closing_scco,
+    reply_scco,
+    reprompt_scco,
+)
+from src.interfaces.llm import ILLMProvider
 
 log = logging.getLogger(__name__)
 
@@ -98,3 +108,113 @@ class AudioStore:
         self._sweep()
         item = self._items.get(token)
         return item[1] if item else None
+
+
+# --- turn controller --------------------------------------------------------
+
+# Agent reply actions that end the call.
+_TERMINAL_ACTIONS = {"end", "close_positive", "close_negative"}
+_REPROMPT_TEXT = "Maaf kijiye, dobara boliye?"
+
+Fetch = Callable[[str], Awaitable[bytes]]
+
+
+class StringeeIvrBridge(OutcomeRecorderMixin):
+    """One per call. HTTP-driven: start_call once, handle_turn per webhook."""
+
+    def __init__(
+        self,
+        *,
+        call_id: str,
+        agent,
+        llm: ILLMProvider | None,
+        tenant_timezone: str,
+        tts_sample_rate: int,
+        base_url: str,
+        tenant_slug: str,
+        fetch: Fetch,
+    ) -> None:
+        self.call_id = call_id
+        self._agent = agent
+        self._llm = llm
+        self._tenant_timezone = tenant_timezone
+        self._rate = tts_sample_rate
+        self._base = base_url.rstrip("/")
+        self._slug = tenant_slug
+        self._fetch = fetch
+        self.audio = AudioStore()
+        self._last_action: str | None = None
+        self._outcome_recorded = False
+        self.touched = time.monotonic()
+
+    # -- url builders --
+    def _event_url(self) -> str:
+        return f"{self._base}/event/{self._slug}?call_id={self.call_id}"
+
+    def _host(self, pcm16: bytes) -> str:
+        wav = pcm16_to_wav(pcm16, self._rate)
+        token = self.audio.put(wav)
+        return f"{self._base}/audio/{token}"
+
+    # -- lifecycle --
+    async def start_call(self) -> list[dict]:
+        sink = BufferingAudioSink()
+        await self._agent.play_opening(sink)
+        url = self._host(sink.pcm)
+        return answer_scco(audio_url=url, event_url=self._event_url())
+
+    async def handle_turn(self, *, recording_url: str) -> list[dict]:
+        self.touched = time.monotonic()
+        try:
+            blob = await self._fetch(recording_url)
+            pcm, rate = wav_to_pcm16(blob)
+            pcm = resample_pcm16(pcm, rate, self._rate)
+        except Exception:  # noqa: BLE001 - never drop the call on a bad recording
+            log.exception("stringee recording fetch/decode failed")
+            return reprompt_scco(text=_REPROMPT_TEXT, event_url=self._event_url())
+
+        sink = BufferingAudioSink()
+        outcome = await self._agent.handle_turn(pcm, sink)
+        self._last_action = outcome.response.action
+        reply_pcm = sink.pcm
+
+        if outcome.response.action in _TERMINAL_ACTIONS:
+            return closing_scco(audio_url=self._host(reply_pcm))
+        if not (outcome.response.response_text or "").strip():
+            return reprompt_scco(text=_REPROMPT_TEXT, event_url=self._event_url())
+        return reply_scco(audio_url=self._host(reply_pcm), event_url=self._event_url())
+
+    async def end(self) -> None:
+        await self._record_outcome()  # OutcomeRecorderMixin
+        await self._agent.handle_hangup()
+
+
+# --- registry ---------------------------------------------------------------
+
+
+class _Registry:
+    """In-memory call_id -> bridge map (single-instance/sticky; see spec)."""
+
+    def __init__(self, ttl_seconds: float = 900.0) -> None:
+        self._ttl = ttl_seconds
+        self._calls: dict[str, StringeeIvrBridge] = {}
+
+    def put(self, bridge: StringeeIvrBridge) -> None:
+        self._sweep()
+        self._calls[bridge.call_id] = bridge
+
+    def get(self, call_id: str) -> StringeeIvrBridge | None:
+        return self._calls.get(call_id)
+
+    async def end(self, call_id: str) -> None:
+        bridge = self._calls.pop(call_id, None)
+        if bridge is not None:
+            await bridge.end()
+
+    def _sweep(self) -> None:
+        cutoff = time.monotonic() - self._ttl
+        for cid in [c for c, b in self._calls.items() if b.touched < cutoff]:
+            self._calls.pop(cid, None)
+
+
+registry = _Registry()
