@@ -61,6 +61,16 @@ def test_event_runs_a_turn_and_returns_reply_scco(client):
     assert scco[0]["action"] == "play" and scco[1]["action"] == "recordMessage"
 
 
+def test_stringee_number_extracts_from_str_dict_list():
+    from src.api.telephony_hooks import _stringee_number
+    assert _stringee_number("+918204268005") == "+918204268005"
+    assert _stringee_number({"number": "+918204268005"}) == "+918204268005"
+    assert _stringee_number([{"number": "+918204268005"}]) == "+918204268005"
+    assert _stringee_number({"alias": "918204268005"}) == "918204268005"
+    assert _stringee_number(None) is None
+    assert _stringee_number([]) is None
+
+
 def test_event_unknown_call_returns_reprompt(client):
     r = client.post("/api/v1/telephony/stringee/event/dev?call_id=nope",
                     json={"recording_url": "https://rec/1.wav"})
