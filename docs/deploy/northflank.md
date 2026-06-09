@@ -74,6 +74,17 @@ Twilio/Exotel number's webhooks to that URL. Mumbai (not Singapore) would be mat
 live call audio path if it ever becomes available on your provider — see
 `docs/latency-llm-stt-experiments.md` (Experiment 2).
 
+#### Stringee (turn-based IVR)
+If a tenant uses Stringee:
+- Set `telephony.provider: stringee` in the tenant's config.
+- Add env `STRINGEE_API_KEY_SID` and `STRINGEE_API_KEY_SECRET` (shared across tenants).
+- In the Stringee dashboard, set the number's **Answer URL** to
+  `https://<service>.<project>.code.run/api/v1/telephony/stringee/answer` and **Status URL** to
+  `https://<service>.<project>.code.run/api/v1/telephony/stringee/status/<tenant_slug>`.
+- Ensure `WEBHOOK_BASE_URL` is set (Stringee must be able to fetch hosted audio and post event webhooks).
+- **Note:** Stringee turn-based IVR is half-duplex with higher latency than Twilio/Exotel streaming,
+  and single-instance only (no horizontal scaling).
+
 ### Tenant API auth (optional)
 If you expose the tenant REST API publicly, set `TENANT_DEV_API_TOKENS=<comma,separated,tokens>` and the
 admin tokens per `src/main.py` (`TENANT_<SLUG>_API_TOKENS`).

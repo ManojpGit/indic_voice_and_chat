@@ -21,9 +21,9 @@ declared provider preferences into a live conversation. Flow:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from fastapi import WebSocket
 
@@ -41,7 +41,7 @@ from src.interfaces.llm import LLMConfig
 from src.interfaces.stt import STTConfig
 from src.interfaces.tts import TTSConfig
 from src.pipeline.engine import PipelineConfig, PipelineEngine
-from src.pipeline.vad import EndpointConfig, EnergyVAD
+from src.pipeline.vad import EnergyVAD
 from src.providers import (
     get_llm_provider,
     get_stt_provider,
@@ -309,6 +309,74 @@ def make_exotel_bridge_factory(
             config=cfg,
             llm=llm,
             tenant_timezone=getattr(tenant.settings, "timezone", "Asia/Kolkata"),
+        )
+
+    return factory
+
+
+# --- Stringee IVR bridge factory (HTTP-driven, per-call) --------------------
+
+
+def make_stringee_bridge_factory(
+    providers: TenantProviders,
+    script: VoiceBotScript = DEFAULT_DEMO_SCRIPT,
+    slots: SlotSchema = SlotSchema(),
+):
+    """Build a StringeeIvrBridge per call, wired to the tenant's providers.
+
+    Same agent assembly as make_exotel_bridge_factory; HTTP-driven instead of
+    WS-driven, so the call_id/base_url/fetch are passed per call by the route.
+    """
+    from src.api.telephony_stringee_bridge import StringeeIvrBridge
+
+    def factory(*, call_id, tenant, base_url, fetch):
+        stt = providers.get_stt(tenant)
+        llm = providers.get_llm(tenant)
+        tts = providers.get_tts(tenant)
+
+        pipeline_cfg = PipelineConfig(
+            stt=STTConfig(language=tenant.settings.pipeline.stt.language or "hi-IN"),
+            llm=LLMConfig(
+                temperature=tenant.settings.pipeline.llm.temperature or 0.5,
+                max_tokens=tenant.settings.pipeline.llm.max_tokens or 256,
+                response_format=tenant.settings.pipeline.llm.response_format or "json",
+            ),
+            tts=TTSConfig(
+                language=tenant.settings.pipeline.tts.language or "hi-IN",
+                voice_id=tenant.settings.pipeline.tts.voice_id,
+                sample_rate=16000,
+            ),
+        )
+        engine = PipelineEngine(stt, llm, tts, pipeline_cfg)
+
+        import uuid
+
+        session_id = f"call_{uuid.uuid4().hex[:12]}"
+        session = AgentSession(session_id=session_id)
+        sm = AgentStateMachine()
+        agent = VoiceBotAgent(
+            session=session,
+            state_machine=sm,
+            slot_schema=slots,
+            script=script,
+            engine=engine,
+            store=None,
+        )
+
+        log.info(
+            "stringee bridge factory built call",
+            extra={"tenant": tenant.slug, "session_id": session_id},
+        )
+
+        return StringeeIvrBridge(
+            call_id=str(call_id),
+            agent=agent,
+            llm=llm,
+            tenant_timezone=getattr(tenant.settings, "timezone", "Asia/Kolkata"),
+            tts_sample_rate=16000,
+            base_url=base_url,
+            tenant_slug=tenant.slug,
+            fetch=fetch,
         )
 
     return factory

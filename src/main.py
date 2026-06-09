@@ -15,22 +15,23 @@ Lifespan-based startup:
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
 
 import redis.asyncio as redis_async
 from fastapi import FastAPI
 from sqlalchemy import text
 
-from src.api import api_router
-from src.api import telephony_hooks
+from src.api import api_router, telephony_hooks
 from src.api.dev_console import (
     dev_console_enabled,
     dev_router,
-    ws_router as dev_ws_router,
     make_browser_bridge_factory,
     set_browser_bridge_factory,
+)
+from src.api.dev_console import (
+    ws_router as dev_ws_router,
 )
 from src.auth.middleware import (
     InMemoryTenantResolver,
@@ -41,6 +42,7 @@ from src.bootstrap import (
     build_provider_registry,
     make_bridge_factory,
     make_exotel_bridge_factory,
+    make_stringee_bridge_factory,
 )
 from src.config import Settings, get_settings
 from src.config_tenant import TenantSettings, discover_tenant_slugs, load_tenant
@@ -122,6 +124,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             script=campaign.script, slots=campaign.slots,
         )
     )
+    telephony_hooks.set_stringee_bridge_factory(
+        make_stringee_bridge_factory(
+            providers=providers, script=campaign.script, slots=campaign.slots,
+        )
+    )
     if dev_console_enabled():
         set_browser_bridge_factory(
             make_browser_bridge_factory(
@@ -137,6 +144,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("shutdown")
         telephony_hooks.set_bridge_factory(None)
         telephony_hooks.set_exotel_bridge_factory(None)
+        telephony_hooks.set_stringee_bridge_factory(None)
         set_browser_bridge_factory(None)
         await redis_client.aclose()
         await dispose_engine()

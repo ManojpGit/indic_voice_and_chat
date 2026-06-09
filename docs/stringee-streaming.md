@@ -5,6 +5,40 @@
 fill the gap when a tenant actually needs Stringee as their telephony
 provider for a live voicebot.
 
+## Status: turn-based IVR is implemented (2026-06-09)
+
+A **turn-based IVR** path is now available as an alternative to the streaming
+options below. This path reuses the agent's existing batch pipeline and
+requires no external infrastructure:
+
+- On call answer, Stringee fetches a Server Command Code (SCC) from `/api/v1/telephony/stringee/answer`
+  which plays an opening greeting (Sarvam TTS, hosted as a transient WAV) and starts recording
+  with `recordMessage` (silence-detected).
+- When the caller finishes speaking, the recording is POSTed to `/api/v1/telephony/stringee/event/{tenant_slug}`.
+  The server downloads the recording, runs a batch turn (Deepgram STT → Gemini LLM → Sarvam TTS),
+  hosts the reply WAV, and returns the next SCC (`play` + `recordMessage`). `bargeIn:true` allows
+  the caller to interrupt playback.
+- Status and audio retrieval: `POST /status/{tenant_slug}` (call lifecycle), `GET /audio/{token}` (hosted audio).
+
+**Configuration** (per-tenant):
+- Set `telephony.provider: stringee` in tenant config.
+- Env: `STRINGEE_API_KEY_SID` and `STRINGEE_API_KEY_SECRET` (shared across tenants).
+- For inbound calls: set the Stringee dashboard number's **Answer URL** to
+  `https://<host>/api/v1/telephony/stringee/answer` and **Status URL** to
+  `https://<host>/api/v1/telephony/stringee/status/<tenant_slug>`.
+- For outbound calls: answer_url is set automatically from `WEBHOOK_BASE_URL`.
+- `WEBHOOK_BASE_URL` must be publicly reachable (Stringee fetches hosted audio and posts events).
+
+**Constraints:**
+- Turn-based / half-duplex (higher latency + lower interactivity than Twilio/Exotel streaming).
+- Single-instance only (in-memory call registry; sticky, no horizontal scaling).
+- `transfer` is not yet supported.
+
+See `docs/superpowers/specs/2026-06-09-stringee-ivr-design.md` and
+`docs/superpowers/plans/2026-06-09-stringee-ivr.md` for the detailed design and implementation plan.
+
+---
+
 ## Why it isn't done in the adapter
 
 Twilio (Media Streams) and Exotel (Voicebot Streaming) both expose a
@@ -110,3 +144,33 @@ To enable Stringee streaming end-to-end:
 3. Replace the `NotImplementedError`s with the appropriate forwarding
    logic (or simply remove them — the streaming layer will already be
    handled by the bridge service).
+
+---
+
+## Live validation checklist
+
+To verify the turn-based IVR path in a real call (after deploy):
+
+1. **Outbound call + greeting playback**
+   - Place a test outbound call to +918618795697 with `answer_url = https://<host>/api/v1/telephony/stringee/answer`.
+   - Confirm logs show `stringee answer` and the opening greeting plays.
+   - **If Stringee rejects the audio:** check server logs for the error; if it's a codec issue, resample
+     the hosted WAV to 8 kHz in `StringeeIvrBridge._host`.
+
+2. **Recording + turn execution + reply playback**
+   - Speak a message.
+   - Confirm an `event` POST arrives at `/api/v1/telephony/stringee/event/{tenant_slug}` with a recording link.
+   - Confirm server logs show a turn running (STT → LLM → TTS).
+   - Confirm the reply plays back.
+   - **If the recording isn't fetchable:** check server logs for decode errors; adjust the `format` parameter
+     in the `recordMessage` if needed.
+
+3. **Barge-in interruption**
+   - Wait for a reply to play.
+   - Speak over it (barge in).
+   - Confirm the playback stops and your speech is recorded as a new turn.
+
+4. **Call end + outcome logging**
+   - End the call.
+   - Confirm logs show `stringee_status` ENDED.
+   - Confirm a `call outcome` is logged (if campaign logging is wired).
