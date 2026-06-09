@@ -223,16 +223,31 @@ async def _download(url: str) -> bytes:
         return resp.content
 
 
+def _stringee_number(value: object) -> str | None:
+    """Pull a phone number out of a webhook field that may be a bare string,
+    an object (``{"number": ...}`` — the shape our callout uses), or a list of
+    those. The exact answer-webhook shape is confirmed by the first live call.
+    """
+    if isinstance(value, list):
+        value = value[0] if value else None
+    if isinstance(value, dict):
+        return value.get("number") or value.get("e164") or value.get("alias")
+    return value if isinstance(value, str) else None
+
+
 @router.post("/stringee/answer")
 async def stringee_answer(request: Request):
     """Call answered -> build the call's bridge and return the opening SCCO."""
     body = await request.json()
-    log.info("stringee answer", extra={"body_keys": sorted(body.keys())})
+    # Full body logged (not just keys) so the FIRST live call reveals Stringee's
+    # actual field names + number shapes; tighten extraction once confirmed.
+    log.info("stringee answer", extra={"body": body})
     call_id = str(body.get("call_id") or body.get("callId") or body.get("call_sid") or "")
     if not call_id:
         log.warning("stringee answer missing call_id; body_keys=%s", sorted(body.keys()))
     direction = (body.get("direction") or "").lower()
-    to_num, from_num = body.get("to"), body.get("from")
+    to_num = _stringee_number(body.get("to") or body.get("toNumber") or body.get("called"))
+    from_num = _stringee_number(body.get("from") or body.get("fromNumber") or body.get("caller"))
     lookup = from_num if (direction.startswith("outbound") and from_num) else to_num
     tenant = await tenant_from_twilio_to_number(lookup)
     if _stringee_bridge_factory is None:
@@ -257,7 +272,7 @@ async def stringee_event(tenant_slug: str, request: Request, call_id: str | None
     graceful reprompt (200) instead of a FastAPI 422.
     """
     body = await request.json()
-    log.info("stringee event", extra={"tenant": tenant_slug, "call_id": call_id, "body_keys": sorted(body.keys())})
+    log.info("stringee event", extra={"tenant": tenant_slug, "call_id": call_id, "body": body})
     rec_url = (
         body.get("recording_url")
         or body.get("url")
@@ -300,7 +315,7 @@ async def stringee_status(tenant_slug: str, request: Request):
     body = await request.json()
     call_id = str(body.get("call_id") or body.get("callId") or body.get("call_sid") or "")
     status = (body.get("status") or body.get("event") or body.get("call_status") or "").upper()
-    log.info("stringee status", extra={"call_id": call_id, "status": status})
+    log.info("stringee status", extra={"call_id": call_id, "status": status, "body": body})
     if status in ("ENDED", "FAILED", "NO_ANSWER", "BUSY"):
         await registry.end(call_id)
     return Response(status_code=200)

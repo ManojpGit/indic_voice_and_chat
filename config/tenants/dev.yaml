@@ -73,9 +73,12 @@ pipeline:
     api_key_env: TENANT_DEV_SARVAM_KEY
 
   telephony:
-    provider: twilio
-    from_number: "+15705255679" # override with your Twilio number
-    webhook_base_url: "https://conceitedly-sinewy-margurite.ngrok-free.dev/api/v1/telephony"
+    provider: stringee
+    from_number: "+918204268005"   # Stringee caller-ID
+    webhook_base_url: "https://p01--voice-bot--9f4wlvz8tgw7.code.run/api/v1/telephony"
+    # Stringee auth is read from env STRINGEE_API_KEY_SID / STRINGEE_API_KEY_SECRET
+    # by the adapter directly; the *_env fields below are Twilio-shaped and unused
+    # for stringee (kept so flipping back to Twilio only needs the provider line).
     account_sid_env: TENANT_DEV_TWILIO_SID
     auth_token_env: TENANT_DEV_TWILIO_TOKEN
 
@@ -94,8 +97,12 @@ crm:
 whatsapp:
   provider: fake
 
-# The Twilio number(s) you own. Inbound voice webhooks resolve to this
-# tenant by matching the ``To`` form param against this list.
+# Numbers this tenant owns. Inbound/answer webhooks resolve to this tenant by
+# matching the call's number against this list (EXACT match — no normalization),
+# so the Stringee number is listed in both +E.164 and bare forms until the live
+# call confirms which format Stringee's webhook sends.
 phone_numbers:
   - "+15705255679"
   - "+918618795697"
+  - "+918204268005"   # Stringee caller-ID (+E.164 form)
+  - "918204268005"    # Stringee caller-ID (bare form — exact-match hedge)
