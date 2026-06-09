@@ -10,6 +10,8 @@ from __future__ import annotations
 import audioop
 import io
 import logging
+import secrets
+import time
 import wave
 
 log = logging.getLogger(__name__)
@@ -68,3 +70,31 @@ class BufferingAudioSink:
     @property
     def pcm(self) -> bytes:
         return b"".join(self._chunks)
+
+
+class AudioStore:
+    """Short-lived token -> WAV bytes map for serving reply audio to Stringee.
+
+    Entries expire after ``ttl_seconds`` (a call's audio is fetched once,
+    seconds after we hand Stringee the URL). Eviction is lazy on get/put.
+    """
+
+    def __init__(self, ttl_seconds: float = 120.0) -> None:
+        self._ttl = ttl_seconds
+        self._items: dict[str, tuple[float, bytes]] = {}
+
+    def _sweep(self) -> None:
+        cutoff = time.monotonic() - self._ttl
+        for tok in [k for k, (ts, _) in self._items.items() if ts < cutoff]:
+            self._items.pop(tok, None)
+
+    def put(self, wav: bytes) -> str:
+        self._sweep()
+        token = secrets.token_urlsafe(16)
+        self._items[token] = (time.monotonic(), wav)
+        return token
+
+    def get(self, token: str) -> bytes | None:
+        self._sweep()
+        item = self._items.get(token)
+        return item[1] if item else None

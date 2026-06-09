@@ -1,6 +1,7 @@
 import pytest
 
 from src.api.telephony_stringee_bridge import (
+    AudioStore,
     BufferingAudioSink,
     pcm16_to_wav,
     resample_pcm16,
@@ -29,3 +30,20 @@ async def test_buffering_sink_collects_pcm():
     await sink(b"ab")
     await sink(b"cd")
     assert sink.pcm == b"abcd"
+
+
+def test_audio_store_put_get_and_token_is_opaque():
+    store = AudioStore(ttl_seconds=60)
+    token = store.put(b"wavbytes")
+    assert isinstance(token, str) and len(token) >= 16
+    assert store.get(token) == b"wavbytes"
+
+
+def test_audio_store_evicts_expired(monkeypatch):
+    import src.api.telephony_stringee_bridge as m
+    t = {"now": 1000.0}
+    monkeypatch.setattr(m.time, "monotonic", lambda: t["now"])
+    store = AudioStore(ttl_seconds=10)
+    token = store.put(b"x")
+    t["now"] = 1011.0  # past TTL
+    assert store.get(token) is None
