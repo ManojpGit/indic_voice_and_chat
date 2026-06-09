@@ -11,6 +11,7 @@ Endpoint reference: https://docs.sarvam.ai/api-reference-docs/text-to-speech
 from __future__ import annotations
 
 import base64
+import logging
 import os
 from typing import Any, AsyncIterator
 
@@ -18,6 +19,17 @@ import httpx
 
 from src.interfaces.tts import ITTSProvider, TTSConfig, TTSResult
 from src.pipeline.text_normalize import apply_pronunciations, normalize_currency
+
+
+log = logging.getLogger(__name__)
+
+# A TTS request must fail well within the turn budget (TURN_TIMEOUT_S = 20s):
+# otherwise a hung Sarvam request stalls the whole turn in "thinking" until the
+# turn timeout cancels it mid-synthesis (no audio, 20s dead air). With a tight
+# per-request timeout the hang fails fast and one retry can recover a transient
+# blip — total worst case stays under the turn budget.
+_DEFAULT_TIMEOUT_S = 8.0
+_TTS_ATTEMPTS = 2  # initial try + 1 retry
 
 
 SARVAM_BASE_URL = "https://api.sarvam.ai"
@@ -50,7 +62,7 @@ class SarvamTTSAdapter(ITTSProvider):
         self._model = config.get("model") or DEFAULT_MODEL
         self._api_key = config.get("api_key") or os.environ.get("SARVAM_API_KEY")
         self._base_url = config.get("base_url", SARVAM_BASE_URL)
-        self._timeout = config.get("timeout", 30.0)
+        self._timeout = config.get("timeout", _DEFAULT_TIMEOUT_S)
         if not self._api_key:
             raise ValueError(
                 "SarvamTTSAdapter requires an API key (config 'api_key' or "
@@ -77,14 +89,34 @@ class SarvamTTSAdapter(ITTSProvider):
             "pace": config.speed,
             "pitch": config.pitch,
         }
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(
-                f"{self._base_url}/text-to-speech",
-                headers=self._headers(),
-                json=body,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
+        timeout = httpx.Timeout(self._timeout, connect=min(self._timeout, 5.0))
+        payload = None
+        last_exc: Exception | None = None
+        for attempt in range(_TTS_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    resp = await client.post(
+                        f"{self._base_url}/text-to-speech",
+                        headers=self._headers(),
+                        json=body,
+                    )
+                    resp.raise_for_status()
+                    payload = resp.json()
+                break
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                last_exc = e
+                log.warning("sarvam tts transient error (attempt %d/%d): %s",
+                            attempt + 1, _TTS_ATTEMPTS, e)
+            except httpx.HTTPStatusError as e:
+                # Retry only transient 5xx; surface 4xx (bad key/request) at once.
+                if e.response.status_code >= 500 and attempt + 1 < _TTS_ATTEMPTS:
+                    last_exc = e
+                    log.warning("sarvam tts %s (attempt %d/%d); retrying",
+                                e.response.status_code, attempt + 1, _TTS_ATTEMPTS)
+                    continue
+                raise
+        if payload is None:
+            raise last_exc  # type: ignore[misc]  # set whenever the loop didn't break
 
         # Sarvam returns: {"audios": ["<base64>", ...]} — each entry is a
         # WAV-wrapped PCM blob (verified with bulbul:v2). Strip the WAV

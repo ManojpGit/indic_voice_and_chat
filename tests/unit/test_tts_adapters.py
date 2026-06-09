@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 
+import httpx
 import pytest
 import respx
 from httpx import Response
@@ -26,6 +27,45 @@ async def test_synthesize_decodes_base64_audio(adapter: SarvamTTSAdapter) -> Non
     assert result.audio == pcm
     assert result.sample_rate == 16000
     assert result.duration_ms == pytest.approx(125.0, rel=0.1)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_synthesize_retries_once_on_transient_hang(adapter: SarvamTTSAdapter) -> None:
+    # A transient hang (read timeout) must be retried, not bubble up as a turn
+    # stall. The retry recovers and audio is returned.
+    pcm = b"\x01\x02" * 8
+    route = respx.post(f"{SARVAM_BASE_URL}/text-to-speech").mock(
+        side_effect=[
+            httpx.ReadTimeout("hang"),
+            Response(200, json={"audios": [base64.b64encode(pcm).decode()]}),
+        ]
+    )
+    result = await adapter.synthesize("Namaste", TTSConfig(language="hi-IN"))
+    assert route.call_count == 2
+    assert result.audio == pcm
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_synthesize_raises_after_exhausting_retries(adapter: SarvamTTSAdapter) -> None:
+    route = respx.post(f"{SARVAM_BASE_URL}/text-to-speech").mock(
+        side_effect=[httpx.ReadTimeout("a"), httpx.ReadTimeout("b")]
+    )
+    with pytest.raises(httpx.TimeoutException):
+        await adapter.synthesize("Namaste", TTSConfig())
+    assert route.call_count == 2  # initial + 1 retry, then give up
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_synthesize_does_not_retry_4xx(adapter: SarvamTTSAdapter) -> None:
+    route = respx.post(f"{SARVAM_BASE_URL}/text-to-speech").mock(
+        return_value=Response(401, json={"error": "bad key"})
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await adapter.synthesize("Namaste", TTSConfig())
+    assert route.call_count == 1  # auth errors surface immediately
 
 
 @pytest.mark.asyncio
