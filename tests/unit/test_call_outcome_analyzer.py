@@ -18,6 +18,7 @@ class FakeLLM:
     async def generate(self, messages, config) -> LLMResult:
         self.calls += 1
         self.last_messages = messages
+        self.last_config = config
         return LLMResult(text=self._text, finish_reason="stop")
 
     async def generate_stream(self, messages, config):  # pragma: no cover
@@ -47,6 +48,24 @@ async def test_conversational_outcome_parsed():
     assert result.outcome == LeadCallOutcome.INTERESTED
     assert result.summary == "Lead was interested."
     assert result.analysis_source == "llm"
+
+
+@pytest.mark.asyncio
+async def test_analysis_caps_output_to_avoid_truncated_json():
+    # Regression: an unbounded "notes" field let the model overflow max_tokens
+    # mid-string, producing invalid (unterminated) JSON -> wrong fallback
+    # outcome + empty summary. The prompt must cap output length and the config
+    # must give token headroom so a valid envelope always completes.
+    llm = FakeLLM('{"outcome": "interested", "summary": "ok", "notes": "n", '
+                  '"callback_datetime": null, "callback_phrase": null}')
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    await analyze_call(
+        transcript=TRANSCRIPT, slots={}, telephony_status=None,
+        final_action="continue", tenant_timezone="Asia/Kolkata", now=now, llm=llm,
+    )
+    system = llm.last_messages[0].content
+    assert "at most 2 short sentences" in system  # explicit notes cap
+    assert llm.last_config.max_tokens >= 1536  # headroom beyond the old 1024
 
 
 @pytest.mark.asyncio

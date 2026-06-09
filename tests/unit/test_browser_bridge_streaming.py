@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 
 import pytest
 
@@ -109,6 +110,101 @@ async def test_endpoint_ignored_while_agent_busy():
     bridge._agent_busy = True
     await bridge._consume_stream_events(session)
     assert bridge._agent.text_turns == []
+
+
+# --- playback echo gate (fix for "stuck in listening") ------------------
+# While the agent's reply is still playing on the client, mic audio must NOT
+# be streamed to Deepgram, or the agent's own voice (echo) becomes a continuous
+# audio stream that stalls utterance-end detection for many seconds.
+
+@pytest.mark.asyncio
+async def test_pcm_frame_dropped_while_agent_audio_still_playing():
+    bridge, session = _bridge([])
+    bridge._stream_session = session
+    bridge._agent_busy = False               # generation done...
+    bridge._play_until = time.monotonic() + 5  # ...but audio still playing
+    await bridge._on_pcm_frame(b"\x00\x00" * 160)
+    assert session.sent == []  # echo kept out of the recognizer
+
+
+@pytest.mark.asyncio
+async def test_pcm_frame_sent_once_playback_finished():
+    bridge, session = _bridge([])
+    bridge._stream_session = session
+    bridge._agent_busy = False
+    bridge._play_until = time.monotonic() - 1  # playback finished
+    frame = b"\x01\x02" * 160
+    await bridge._on_pcm_frame(frame)
+    assert session.sent == [frame]
+
+
+@pytest.mark.asyncio
+async def test_barge_in_clears_playback_gate():
+    bridge, _ = _bridge([])
+    bridge._agent_busy = True
+    bridge._cancel_event = asyncio.Event()
+    bridge._play_until = time.monotonic() + 5
+    bridge._handle_barge_in()
+    # gate cleared so the interrupting speech isn't dropped as echo
+    assert bridge._play_until <= time.monotonic()
+    assert bridge._cancel_event.is_set()
+
+
+# --- stream reopen on unexpected drop (fix for "stuck in listening") ----
+
+class _DropThenProvider:
+    """open_stream hands out queued sessions; raises once exhausted."""
+    def __init__(self, sessions):
+        self._sessions = list(sessions)
+        self.opens = 0
+
+    async def open_stream(self, config):
+        self.opens += 1
+        if not self._sessions:
+            raise RuntimeError("no more sessions")
+        return self._sessions.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_reopens_after_unexpected_drop(monkeypatch):
+    import src.api.browser_bridge as bb
+    monkeypatch.setattr(bb, "_STREAM_REOPEN_BACKOFF_S", 0)  # keep the test fast
+    s1 = _ScriptedSession([STTStreamEvent(type="endpoint", text="पहला")])
+    s2 = _ScriptedSession([STTStreamEvent(type="endpoint", text="दूसरा")])
+    prov = _DropThenProvider([s2])  # only the reopen target; s1 is the initial session
+    bridge = BrowserVoiceBridge(
+        websocket=_FakeWS(),
+        agent=_FakeAgent(),
+        vad=EnergyVAD(sample_rate=16000, frame_ms=30),
+        config=BrowserBridgeConfig(),
+        stream_provider=prov,
+    )
+    bridge._stream_session = s1
+    await bridge._run_stream_consumer()
+    # s1 dropped after its event -> reopened to s2 and kept consuming
+    assert bridge._agent.text_turns == ["पहला", "दूसरा"]
+    assert prov.opens >= 2          # reopened at least once
+    assert s1.closed                # old session closed on reopen
+    assert bridge._stream_session is None  # gave up cleanly once exhausted
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_stops_without_reopen_when_call_ended(monkeypatch):
+    import src.api.browser_bridge as bb
+    monkeypatch.setattr(bb, "_STREAM_REOPEN_BACKOFF_S", 0)
+    s1 = _ScriptedSession([])
+    prov = _DropThenProvider([s1, _ScriptedSession([])])
+    bridge = BrowserVoiceBridge(
+        websocket=_FakeWS(),
+        agent=_FakeAgent(),
+        vad=EnergyVAD(sample_rate=16000, frame_ms=30),
+        config=BrowserBridgeConfig(),
+        stream_provider=prov,
+    )
+    bridge._stream_session = s1
+    bridge._stopped = True  # call already ending
+    await bridge._run_stream_consumer()
+    assert prov.opens == 0  # no reopen attempted when stopped
 
 
 def test_build_streaming_provider_from_tenant():
