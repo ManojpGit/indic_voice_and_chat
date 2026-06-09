@@ -16,15 +16,18 @@ Inbound flow:
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable, Optional
+from collections.abc import Callable
 
+import httpx
 from fastapi import APIRouter, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from src.api.telephony_exotel import voicebot_xml
+from src.api.telephony_stringee import reprompt_scco
+from src.api.telephony_stringee_bridge import registry
 from src.api.telephony_twilio import voice_twiml
 from src.auth import TenantContext
-from src.auth.middleware import tenant_from_twilio_to_number, tenant_from_ws_query
+from src.auth.middleware import tenant_from_twilio_to_number
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/telephony", tags=["telephony"])
@@ -32,29 +35,38 @@ router = APIRouter(prefix="/telephony", tags=["telephony"])
 
 # Factory: takes (websocket, tenant_context) -> bridge instance with .run()
 BridgeFactory = Callable[[WebSocket, TenantContext], object]
-_bridge_factory: Optional[BridgeFactory] = None
-_exotel_bridge_factory: Optional[BridgeFactory] = None
+_bridge_factory: BridgeFactory | None = None
+_exotel_bridge_factory: BridgeFactory | None = None
 
 
-def set_bridge_factory(factory: Optional[BridgeFactory]) -> None:
+def set_bridge_factory(factory: BridgeFactory | None) -> None:
     """Register the Twilio bridge factory."""
     global _bridge_factory
     _bridge_factory = factory
 
 
-def set_exotel_bridge_factory(factory: Optional[BridgeFactory]) -> None:
+def set_exotel_bridge_factory(factory: BridgeFactory | None) -> None:
     """Register the Exotel bridge factory."""
     global _exotel_bridge_factory
     _exotel_bridge_factory = factory
+
+
+_stringee_bridge_factory = None
+
+
+def set_stringee_bridge_factory(factory) -> None:
+    """Register the Stringee IVR bridge factory."""
+    global _stringee_bridge_factory
+    _stringee_bridge_factory = factory
 
 
 @router.post("/twilio/voice", response_class=Response)
 async def twilio_voice(
     request: Request,
     To: str = Form(...),
-    From: Optional[str] = Form(None),
-    CallSid: Optional[str] = Form(None),
-    Direction: Optional[str] = Form(None),
+    From: str | None = Form(None),
+    CallSid: str | None = Form(None),
+    Direction: str | None = Form(None),
 ) -> Response:
     """Twilio voice webhook → returns TwiML opening a tenant-aware media stream.
 
@@ -133,9 +145,9 @@ async def twilio_stream(websocket: WebSocket, tenant_slug: str) -> None:
 async def exotel_voice(
     request: Request,
     To: str = Form(...),
-    From: Optional[str] = Form(None),
-    CallSid: Optional[str] = Form(None),
-    Direction: Optional[str] = Form(None),
+    From: str | None = Form(None),
+    CallSid: str | None = Form(None),
+    Direction: str | None = Form(None),
 ) -> Response:
     """Exotel Passthru / Voicebot webhook → returns ExotelML opening a stream.
 
@@ -192,3 +204,86 @@ async def exotel_stream(websocket: WebSocket, tenant_slug: str) -> None:
             await websocket.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+# --- Stringee IVR webhook routes --------------------------------------------
+
+
+def _stringee_base(request: Request) -> str:
+    base = request.headers.get("x-forwarded-host") or request.url.netloc
+    proto = request.headers.get("x-forwarded-proto")
+    scheme = "https" if (proto == "https" or request.url.scheme == "https") else "http"
+    return f"{scheme}://{base}/api/v1/telephony/stringee"
+
+
+async def _download(url: str) -> bytes:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=5.0)) as c:
+        resp = await c.get(url)
+        resp.raise_for_status()
+        return resp.content
+
+
+@router.post("/stringee/answer")
+async def stringee_answer(request: Request):
+    """Call answered -> build the call's bridge and return the opening SCCO."""
+    body = await request.json()
+    call_id = str(body.get("call_id") or body.get("callId") or "")
+    direction = (body.get("direction") or "").lower()
+    to_num, from_num = body.get("to"), body.get("from")
+    lookup = from_num if (direction.startswith("outbound") and from_num) else to_num
+    tenant = await tenant_from_twilio_to_number(lookup)
+    if _stringee_bridge_factory is None:
+        return Response(status_code=503)
+    bridge = _stringee_bridge_factory(
+        call_id=call_id, tenant=tenant,
+        base_url=_stringee_base(request), fetch=_download,
+    )
+    registry.put(bridge)
+    scco = await bridge.start_call()
+    log.info("stringee answer", extra={"tenant": tenant.slug, "call_id": call_id})
+    return JSONResponse(scco)
+
+
+@router.post("/stringee/event/{tenant_slug}")
+async def stringee_event(tenant_slug: str, request: Request, call_id: str):
+    """Per-turn recordMessage webhook -> run a turn -> return the next SCCO."""
+    body = await request.json()
+    rec_url = body.get("recording_url") or body.get("url") or body.get("link")
+    bridge = registry.get(call_id)
+    if bridge is None or not rec_url:
+        base = _stringee_base(request)
+        return JSONResponse(reprompt_scco(
+            text="Maaf kijiye, dobara boliye?",
+            event_url=f"{base}/event/{tenant_slug}?call_id={call_id}",
+        ))
+    scco = await bridge.handle_turn(recording_url=rec_url)
+    return JSONResponse(scco)
+
+
+@router.get("/stringee/audio/{token}")
+async def stringee_audio(token: str, call_id: str | None = None):
+    """Serve a hosted reply/opening WAV for Stringee's `play` to fetch."""
+    if call_id:
+        bridge = registry.get(call_id)
+        if bridge is not None:
+            wav = bridge.audio.get(token)
+            if wav is not None:
+                return Response(content=wav, media_type="audio/wav")
+    # Stringee may fetch without our call_id query: scan live calls.
+    for cid in list(getattr(registry, "_calls", {})):
+        b = registry._calls[cid]
+        wav = b.audio.get(token)
+        if wav is not None:
+            return Response(content=wav, media_type="audio/wav")
+    return Response(status_code=404)
+
+
+@router.post("/stringee/status/{tenant_slug}")
+async def stringee_status(tenant_slug: str, request: Request):
+    """Lifecycle webhook: on call end, record the outcome and clean up."""
+    body = await request.json()
+    call_id = str(body.get("call_id") or body.get("callId") or "")
+    status = (body.get("status") or "").upper()
+    if status in ("ENDED", "FAILED", "NO_ANSWER", "BUSY"):
+        await registry.end(call_id)
+    return Response(status_code=200)
