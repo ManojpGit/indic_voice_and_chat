@@ -227,7 +227,10 @@ async def _download(url: str) -> bytes:
 async def stringee_answer(request: Request):
     """Call answered -> build the call's bridge and return the opening SCCO."""
     body = await request.json()
-    call_id = str(body.get("call_id") or body.get("callId") or "")
+    log.info("stringee answer", extra={"body_keys": sorted(body.keys())})
+    call_id = str(body.get("call_id") or body.get("callId") or body.get("call_sid") or "")
+    if not call_id:
+        log.warning("stringee answer missing call_id; body_keys=%s", sorted(body.keys()))
     direction = (body.get("direction") or "").lower()
     to_num, from_num = body.get("to"), body.get("from")
     lookup = from_num if (direction.startswith("outbound") and from_num) else to_num
@@ -240,25 +243,35 @@ async def stringee_answer(request: Request):
     )
     registry.put(bridge)
     scco = await bridge.start_call()
-    log.info("stringee answer", extra={"tenant": tenant.slug, "call_id": call_id})
+    log.info("stringee answer registered", extra={"tenant": tenant.slug, "call_id": call_id})
     return JSONResponse(scco)
 
 
 @router.post("/stringee/event/{tenant_slug}")
-async def stringee_event(tenant_slug: str, request: Request, call_id: str):
+async def stringee_event(tenant_slug: str, request: Request, call_id: str | None = None):
     """Per-turn recordMessage webhook -> run a turn -> return the next SCCO.
 
     Note: tenant_slug is URL namespacing only; the bridge is looked up by
     call_id — tenant_slug is not validated here.
+    call_id is optional so that a missing ?call_id= query param returns a
+    graceful reprompt (200) instead of a FastAPI 422.
     """
     body = await request.json()
-    rec_url = body.get("recording_url") or body.get("url") or body.get("link")
-    bridge = registry.get(call_id)
+    log.info("stringee event", extra={"tenant": tenant_slug, "call_id": call_id, "body_keys": sorted(body.keys())})
+    rec_url = (
+        body.get("recording_url")
+        or body.get("url")
+        or body.get("link")
+        or body.get("fileUrl")
+        or body.get("file_url")
+        or body.get("recordingUrl")
+    )
+    bridge = registry.get(call_id) if call_id else None
     if bridge is None or not rec_url:
         base = _stringee_base(request)
         return JSONResponse(reprompt_scco(
             text="Maaf kijiye, dobara boliye?",
-            event_url=f"{base}/event/{tenant_slug}?call_id={call_id}",
+            event_url=f"{base}/event/{tenant_slug}?call_id={call_id or ''}",
         ))
     scco = await bridge.handle_turn(recording_url=rec_url)
     return JSONResponse(scco)
@@ -285,8 +298,8 @@ async def stringee_audio(token: str, call_id: str | None = None):
 async def stringee_status(tenant_slug: str, request: Request):
     """Lifecycle webhook: on call end, record the outcome and clean up."""
     body = await request.json()
-    call_id = str(body.get("call_id") or body.get("callId") or "")
-    status = (body.get("status") or "").upper()
+    call_id = str(body.get("call_id") or body.get("callId") or body.get("call_sid") or "")
+    status = (body.get("status") or body.get("event") or body.get("call_status") or "").upper()
     log.info("stringee status", extra={"call_id": call_id, "status": status})
     if status in ("ENDED", "FAILED", "NO_ANSWER", "BUSY"):
         await registry.end(call_id)

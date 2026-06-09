@@ -133,3 +133,34 @@ def test_audio_served_without_call_id_query_param(client):
     a = client.get(f"/api/v1/telephony/stringee/audio/{token}")
     assert a.status_code == 200, f"expected 200, got {a.status_code}"
     assert a.content[:4] == b"RIFF", "expected WAV RIFF header"
+
+
+# --- Hardening: optional call_id query param + broadened field-name probes ---
+
+
+def test_event_without_call_id_query_returns_reprompt_not_422(client):
+    """POST to /event/{tenant} with NO ?call_id= must return 200 reprompt (talk SCCO), not 422."""
+    r = client.post(
+        "/api/v1/telephony/stringee/event/dev",
+        json={"recording_url": "https://rec/1.wav"},
+    )
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text}"
+    scco = r.json()
+    assert scco[0]["action"] == "talk", f"expected talk reprompt, got {scco!r}"
+
+
+def test_event_accepts_file_url_field_name(client):
+    """The broadened recording-url probe must recognise 'fileUrl' as a valid field name."""
+    client.post(
+        "/api/v1/telephony/stringee/answer",
+        json={"call_id": "c1", "to": "+1", "from": "+2", "direction": "outbound"},
+    )
+    r = client.post(
+        "/api/v1/telephony/stringee/event/dev?call_id=c1",
+        json={"fileUrl": "https://rec/1.wav"},
+    )
+    assert r.status_code == 200, f"expected 200, got {r.status_code}: {r.text}"
+    scco = r.json()
+    assert scco[0]["action"] == "play" and scco[1]["action"] == "recordMessage", (
+        f"expected play+recordMessage reply SCCO, got {scco!r}"
+    )
