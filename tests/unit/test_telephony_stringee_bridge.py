@@ -15,10 +15,14 @@ class _FakeResponse:
 class _FakeAgent:
     """Records calls; play_opening + handle_turn push PCM into the sink."""
     def __init__(self):
+        self.started = False
         self.turns = []
         self.hung_up = False
         self.state = type("S", (), {"is_terminal": False})()
         self._next = _FakeResponse()
+
+    async def start(self):
+        self.started = True
 
     async def play_opening(self, sink):
         await sink(b"\x10\x00" * 8)  # 16 bytes of "opening" PCM
@@ -96,3 +100,11 @@ async def test_registry_create_lookup_end():
     await registry.end("call-1")
     assert agent.hung_up is True
     assert registry.get("call-1") is None
+
+
+@pytest.mark.asyncio
+async def test_start_call_starts_the_agent_before_opening():
+    agent = _FakeAgent()
+    bridge = _bridge(agent)
+    await bridge.start_call()
+    assert agent.started is True

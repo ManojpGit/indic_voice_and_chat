@@ -158,6 +158,7 @@ class StringeeIvrBridge(OutcomeRecorderMixin):
 
     # -- lifecycle --
     async def start_call(self) -> list[dict]:
+        await self._agent.start()
         sink = BufferingAudioSink()
         await self._agent.play_opening(sink)
         url = self._host(sink.pcm)
@@ -214,6 +215,7 @@ class _Registry:
     def _sweep(self) -> None:
         cutoff = time.monotonic() - self._ttl
         for cid in [c for c, b in self._calls.items() if b.touched < cutoff]:
+            log.warning("stringee call %s evicted by TTL without end(); outcome not recorded", cid)
             self._calls.pop(cid, None)
 
 
