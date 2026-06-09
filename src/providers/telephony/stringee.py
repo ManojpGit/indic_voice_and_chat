@@ -28,7 +28,8 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
@@ -37,7 +38,6 @@ from src.interfaces.telephony import (
     CallSession,
     ITelephonyProvider,
 )
-
 
 STRINGEE_BASE_URL = "https://api.stringee.com"
 
@@ -64,10 +64,18 @@ class StringeeAdapter(ITelephonyProvider):
             )
         self._api_key_sid = api_key_sid
         self._api_key_secret = api_key_secret
-        self._base_url = config.get("base_url", STRINGEE_BASE_URL).rstrip("/")
+        # Stringee keys are region-scoped: a key issued in (e.g.) asia-2 is
+        # rejected by the global api.stringee.com with "keySid invalid". Allow
+        # the regional API base to come from config or the STRINGEE_BASE_URL env
+        # var (e.g. https://asia-2.api.stringee.com).
+        self._base_url = (
+            config.get("base_url")
+            or os.environ.get("STRINGEE_BASE_URL")
+            or STRINGEE_BASE_URL
+        ).rstrip("/")
         self._timeout = config.get("timeout", 30.0)
         # Tests can inject a pre-built bearer; otherwise we mint a fresh JWT.
-        self._token_override: Optional[str] = config.get("access_token")
+        self._token_override: str | None = config.get("access_token")
 
     def _make_access_token(self, ttl_seconds: int = 3600) -> str:
         """Mint a Stringee access JWT signed with HS256 (api_key_secret).
