@@ -110,6 +110,26 @@ async def test_start_call_starts_the_agent_before_opening():
     assert agent.started is True
 
 
+# --- Fix 1: agent failures must NOT 500 / drop the call ---
+
+
+class _RaisingAgent(_FakeAgent):
+    """Agent whose handle_turn raises to simulate a transient LLM/STT/TTS error."""
+
+    async def handle_turn(self, captured, sink):
+        raise RuntimeError("simulated provider failure")
+
+
+@pytest.mark.asyncio
+async def test_handle_turn_agent_raises_returns_reprompt_scco():
+    """When agent.handle_turn raises, handle_turn must return a reprompt (talk) SCCO."""
+    agent = _RaisingAgent()
+    bridge = _bridge(agent)
+    scco = await bridge.handle_turn(recording_url="https://rec/1.wav")
+    assert scco[0]["action"] == "talk", f"expected 'talk' reprompt, got {scco!r}"
+    assert scco[1]["action"] == "recordMessage"
+
+
 def test_make_stringee_bridge_factory_builds_a_bridge():
     from types import SimpleNamespace
 

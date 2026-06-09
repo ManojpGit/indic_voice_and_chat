@@ -158,10 +158,14 @@ class StringeeIvrBridge(OutcomeRecorderMixin):
 
     # -- lifecycle --
     async def start_call(self) -> list[dict]:
-        await self._agent.start()
-        sink = BufferingAudioSink()
-        await self._agent.play_opening(sink)
-        url = self._host(sink.pcm)
+        try:
+            await self._agent.start()
+            sink = BufferingAudioSink()
+            await self._agent.play_opening(sink)
+            url = self._host(sink.pcm)
+        except Exception:  # noqa: BLE001 - never answer with a 500 / dead line
+            log.exception("stringee start_call failed")
+            return reprompt_scco(text=_REPROMPT_TEXT, event_url=self._event_url())
         return answer_scco(audio_url=url, event_url=self._event_url())
 
     async def handle_turn(self, *, recording_url: str) -> list[dict]:
@@ -174,8 +178,12 @@ class StringeeIvrBridge(OutcomeRecorderMixin):
             log.exception("stringee recording fetch/decode failed")
             return reprompt_scco(text=_REPROMPT_TEXT, event_url=self._event_url())
 
-        sink = BufferingAudioSink()
-        outcome = await self._agent.handle_turn(pcm, sink)
+        try:
+            sink = BufferingAudioSink()
+            outcome = await self._agent.handle_turn(pcm, sink)
+        except Exception:  # noqa: BLE001 - a provider failure must not drop the call
+            log.exception("stringee agent turn failed")
+            return reprompt_scco(text=_REPROMPT_TEXT, event_url=self._event_url())
         self._last_action = outcome.response.action
         reply_pcm = sink.pcm
 
@@ -211,6 +219,9 @@ class _Registry:
         bridge = self._calls.pop(call_id, None)
         if bridge is not None:
             await bridge.end()
+
+    def iter_bridges(self) -> list[StringeeIvrBridge]:
+        return list(self._calls.values())
 
     def _sweep(self) -> None:
         cutoff = time.monotonic() - self._ttl

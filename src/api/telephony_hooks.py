@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, Response
 
 from src.api.telephony_exotel import voicebot_xml
 from src.api.telephony_stringee import reprompt_scco
-from src.api.telephony_stringee_bridge import registry
+from src.api.telephony_stringee_bridge import StringeeIvrBridge, registry
 from src.api.telephony_twilio import voice_twiml
 from src.auth import TenantContext
 from src.auth.middleware import tenant_from_twilio_to_number
@@ -51,7 +51,7 @@ def set_exotel_bridge_factory(factory: BridgeFactory | None) -> None:
     _exotel_bridge_factory = factory
 
 
-_stringee_bridge_factory = None
+_stringee_bridge_factory: Callable[..., StringeeIvrBridge] | None = None
 
 
 def set_stringee_bridge_factory(factory) -> None:
@@ -246,7 +246,11 @@ async def stringee_answer(request: Request):
 
 @router.post("/stringee/event/{tenant_slug}")
 async def stringee_event(tenant_slug: str, request: Request, call_id: str):
-    """Per-turn recordMessage webhook -> run a turn -> return the next SCCO."""
+    """Per-turn recordMessage webhook -> run a turn -> return the next SCCO.
+
+    Note: tenant_slug is URL namespacing only; the bridge is looked up by
+    call_id — tenant_slug is not validated here.
+    """
     body = await request.json()
     rec_url = body.get("recording_url") or body.get("url") or body.get("link")
     bridge = registry.get(call_id)
@@ -270,8 +274,7 @@ async def stringee_audio(token: str, call_id: str | None = None):
             if wav is not None:
                 return Response(content=wav, media_type="audio/wav")
     # Stringee may fetch without our call_id query: scan live calls.
-    for cid in list(getattr(registry, "_calls", {})):
-        b = registry._calls[cid]
+    for b in registry.iter_bridges():
         wav = b.audio.get(token)
         if wav is not None:
             return Response(content=wav, media_type="audio/wav")
@@ -284,6 +287,7 @@ async def stringee_status(tenant_slug: str, request: Request):
     body = await request.json()
     call_id = str(body.get("call_id") or body.get("callId") or "")
     status = (body.get("status") or "").upper()
+    log.info("stringee status", extra={"call_id": call_id, "status": status})
     if status in ("ENDED", "FAILED", "NO_ANSWER", "BUSY"):
         await registry.end(call_id)
     return Response(status_code=200)
