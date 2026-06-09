@@ -235,21 +235,53 @@ def _stringee_number(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-@router.post("/stringee/answer")
+async def _stringee_params(request: Request) -> dict:
+    """Merge a Stringee webhook's data regardless of method. Stringee fetches
+    the answer_url via GET (call info in the query string); other hooks POST
+    JSON. We read both so the routes work either way."""
+    data = dict(request.query_params)
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - tolerate empty/non-JSON bodies
+            body = None
+        if isinstance(body, dict):
+            data = {**data, **body}
+    return data
+
+
+async def _resolve_stringee_tenant(data: dict):
+    """Resolve the tenant by trying every number field (both from and to). The
+    caller-id is the registered number for outbound, the called number for
+    inbound — so trying both is robust to whether Stringee sends a direction."""
+    for key in ("from", "fromNumber", "caller", "to", "toNumber", "called"):
+        num = _stringee_number(data.get(key))
+        if not num:
+            continue
+        try:
+            return await tenant_from_twilio_to_number(num)
+        except Exception:  # noqa: BLE001 - not this number; try the next
+            continue
+    return None
+
+
+@router.api_route("/stringee/answer", methods=["GET", "POST"])
 async def stringee_answer(request: Request):
-    """Call answered -> build the call's bridge and return the opening SCCO."""
-    body = await request.json()
-    # Full body logged (not just keys) so the FIRST live call reveals Stringee's
-    # actual field names + number shapes; tighten extraction once confirmed.
-    log.info("stringee answer", extra={"body": body})
-    call_id = str(body.get("call_id") or body.get("callId") or body.get("call_sid") or "")
+    """Call answered -> build the call's bridge and return the opening SCCO.
+
+    Stringee fetches the answer_url via **GET** (call info in the query string);
+    we accept POST/JSON too. The whole request is logged so the first live call
+    reveals Stringee's real field names.
+    """
+    data = await _stringee_params(request)
+    log.info("stringee answer", extra={"method": request.method, "data": data})
+    call_id = str(data.get("call_id") or data.get("callId") or data.get("call_sid") or "")
     if not call_id:
-        log.warning("stringee answer missing call_id; body_keys=%s", sorted(body.keys()))
-    direction = (body.get("direction") or "").lower()
-    to_num = _stringee_number(body.get("to") or body.get("toNumber") or body.get("called"))
-    from_num = _stringee_number(body.get("from") or body.get("fromNumber") or body.get("caller"))
-    lookup = from_num if (direction.startswith("outbound") and from_num) else to_num
-    tenant = await tenant_from_twilio_to_number(lookup)
+        log.warning("stringee answer missing call_id; keys=%s", sorted(data.keys()))
+    tenant = await _resolve_stringee_tenant(data)
+    if tenant is None:
+        log.warning("stringee answer: no tenant for any number; keys=%s", sorted(data.keys()))
+        return Response(status_code=404)
     if _stringee_bridge_factory is None:
         return Response(status_code=503)
     bridge = _stringee_bridge_factory(
@@ -262,7 +294,7 @@ async def stringee_answer(request: Request):
     return JSONResponse(scco)
 
 
-@router.post("/stringee/event/{tenant_slug}")
+@router.api_route("/stringee/event/{tenant_slug}", methods=["GET", "POST"])
 async def stringee_event(tenant_slug: str, request: Request, call_id: str | None = None):
     """Per-turn recordMessage webhook -> run a turn -> return the next SCCO.
 
@@ -271,15 +303,16 @@ async def stringee_event(tenant_slug: str, request: Request, call_id: str | None
     call_id is optional so that a missing ?call_id= query param returns a
     graceful reprompt (200) instead of a FastAPI 422.
     """
-    body = await request.json()
-    log.info("stringee event", extra={"tenant": tenant_slug, "call_id": call_id, "body": body})
+    data = await _stringee_params(request)
+    log.info("stringee event", extra={"tenant": tenant_slug, "call_id": call_id,
+                                       "method": request.method, "data": data})
     rec_url = (
-        body.get("recording_url")
-        or body.get("url")
-        or body.get("link")
-        or body.get("fileUrl")
-        or body.get("file_url")
-        or body.get("recordingUrl")
+        data.get("recording_url")
+        or data.get("url")
+        or data.get("link")
+        or data.get("fileUrl")
+        or data.get("file_url")
+        or data.get("recordingUrl")
     )
     bridge = registry.get(call_id) if call_id else None
     if bridge is None or not rec_url:
@@ -309,13 +342,14 @@ async def stringee_audio(token: str, call_id: str | None = None):
     return Response(status_code=404)
 
 
-@router.post("/stringee/status/{tenant_slug}")
+@router.api_route("/stringee/status/{tenant_slug}", methods=["GET", "POST"])
 async def stringee_status(tenant_slug: str, request: Request):
     """Lifecycle webhook: on call end, record the outcome and clean up."""
-    body = await request.json()
-    call_id = str(body.get("call_id") or body.get("callId") or body.get("call_sid") or "")
-    status = (body.get("status") or body.get("event") or body.get("call_status") or "").upper()
-    log.info("stringee status", extra={"call_id": call_id, "status": status, "body": body})
+    data = await _stringee_params(request)
+    call_id = str(data.get("call_id") or data.get("callId") or data.get("call_sid") or "")
+    status = (data.get("status") or data.get("event") or data.get("call_status") or "").upper()
+    log.info("stringee status", extra={"call_id": call_id, "status": status,
+                                        "method": request.method, "data": data})
     if status in ("ENDED", "FAILED", "NO_ANSWER", "BUSY"):
         await registry.end(call_id)
     return Response(status_code=200)
