@@ -108,3 +108,35 @@ async def test_start_call_starts_the_agent_before_opening():
     bridge = _bridge(agent)
     await bridge.start_call()
     assert agent.started is True
+
+
+def test_make_stringee_bridge_factory_builds_a_bridge():
+    from types import SimpleNamespace
+
+    from src.bootstrap import make_stringee_bridge_factory
+    from src.dialogue.prompts import VoiceBotScript
+    from src.dialogue.slots import SlotSchema
+
+    class _Providers:
+        def get_stt(self, t): return object()
+        def get_llm(self, t): return None
+        def get_tts(self, t): return object()
+
+    tenant = SimpleNamespace(
+        id="dev", slug="dev",
+        settings=SimpleNamespace(pipeline=SimpleNamespace(
+            stt=SimpleNamespace(language="hi-IN"),
+            llm=SimpleNamespace(temperature=0.5, max_tokens=256, response_format="json"),
+            tts=SimpleNamespace(language="hi-IN", voice_id=None),
+        )),
+    )
+    script = VoiceBotScript.from_campaign_yaml(
+        {"agent_name": "A", "agent_role": "R", "company_name": "C"}
+    )
+    factory = make_stringee_bridge_factory(
+        providers=_Providers(), script=script, slots=SlotSchema(),
+    )
+    async def _fetch(url): return b""
+    bridge = factory(call_id="c-9", tenant=tenant,
+                     base_url="https://h/api/v1/telephony/stringee", fetch=_fetch)
+    assert bridge.call_id == "c-9"
