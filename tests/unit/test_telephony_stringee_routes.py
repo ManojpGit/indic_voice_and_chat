@@ -51,6 +51,16 @@ def test_answer_returns_opening_scco_and_audio_served(client):
     assert a.status_code == 200 and a.content[:4] == b"RIFF"
 
 
+def test_answer_accepts_get_with_query_params(client):
+    # Stringee fetches answer_url via GET with call info in the query string.
+    r = client.get("/api/v1/telephony/stringee/answer"
+                   "?call_id=g1&from=918204268005&to=918618795697")
+    assert r.status_code == 200
+    scco = r.json()
+    assert scco[0]["action"] == "play" and scco[1]["action"] == "recordMessage"
+    assert "call_id=g1" in scco[1]["eventUrl"]
+
+
 def test_event_runs_a_turn_and_returns_reply_scco(client):
     client.post("/api/v1/telephony/stringee/answer",
                 json={"call_id": "c1", "to": "+1", "from": "+2", "direction": "outbound"})

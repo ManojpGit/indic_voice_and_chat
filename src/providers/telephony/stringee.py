@@ -115,11 +115,13 @@ class StringeeAdapter(ITelephonyProvider):
         returns an SCC (Stringee Call Control) script when the destination
         picks up — equivalent to TwiML.
         """
-        body = {
+        # NOTE: do NOT send ``actions`` (not even an empty list) alongside
+        # ``answer_url`` — Stringee treats a present ``actions`` as the SCCO and
+        # never GETs the answer_url, so the IVR is never invoked.
+        body: dict[str, Any] = {
             "from": {"type": "external", "number": config.from_number, "alias": config.from_number},
             "to": [{"type": "external", "number": config.to_number, "alias": config.to_number}],
             "answer_url": config.webhook_url,
-            "actions": [],
         }
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
