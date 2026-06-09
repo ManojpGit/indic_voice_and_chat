@@ -77,10 +77,15 @@ def main(argv: list[str] | None = None) -> int:
     body: dict = {
         "from": {"type": "external", "number": args.from_number, "alias": args.from_number},
         "to": [{"type": "external", "number": args.to_number, "alias": args.to_number}],
-        "actions": [{"action": "talk", "text": args.text}],
     }
     if args.answer_url:
+        # Route the call to a live IVR: send EMPTY inline actions so Stringee
+        # fetches the SCCO from answer_url. (Inline actions, when present, take
+        # precedence and Stringee would NOT call answer_url.)
         body["answer_url"] = args.answer_url
+        body["actions"] = []
+    else:
+        body["actions"] = [{"action": "talk", "text": args.text}]
 
     url = f"{adapter._base_url}/v1/call2/callout"
     print(f"POST {url}")

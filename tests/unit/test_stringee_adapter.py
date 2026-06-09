@@ -8,6 +8,15 @@ from src.interfaces.telephony import CallConfig
 from src.providers.telephony.stringee import STRINGEE_BASE_URL, StringeeAdapter
 
 
+@pytest.fixture(autouse=True)
+def _pin_default_base(monkeypatch):
+    """These tests mock ``api.stringee.com`` (``STRINGEE_BASE_URL``). Clear any
+    ambient ``STRINGEE_BASE_URL`` (e.g. loaded from ``.env`` by
+    ``tests/conftest.py``) so the adapter isn't redirected to a regional host
+    the respx mocks don't cover."""
+    monkeypatch.delenv("STRINGEE_BASE_URL", raising=False)
+
+
 @pytest.fixture
 def adapter() -> StringeeAdapter:
     return StringeeAdapter({
