@@ -59,6 +59,14 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Text spoken via Stringee text-to-speech")
     p.add_argument("--answer-url", default=None,
                    help="Optional public answer_url; omit to rely on inline actions")
+    p.add_argument("--inline-ivr", default=None, metavar="ANSWER_ENDPOINT",
+                   help="Live IVR over OUTBOUND: pre-fetch the SCCO from this "
+                        "answer endpoint (GET) and embed it inline in the "
+                        "callout's actions — because Stringee does NOT fetch "
+                        "answer_url on outbound callout. e.g. "
+                        "https://<host>/api/v1/telephony/stringee/answer")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Build + print the request body but do NOT place the call")
     return p
 
 
@@ -78,19 +86,41 @@ def main(argv: list[str] | None = None) -> int:
         "from": {"type": "external", "number": args.from_number, "alias": args.from_number},
         "to": [{"type": "external", "number": args.to_number, "alias": args.to_number}],
     }
-    if args.answer_url:
-        # Route the call to a live IVR: send EMPTY inline actions so Stringee
-        # fetches the SCCO from answer_url. (Inline actions, when present, take
-        # precedence and Stringee would NOT call answer_url.)
+    if args.inline_ivr:
+        # Stringee does NOT fetch answer_url on outbound callout, so pre-fetch
+        # our SCCO from the answer endpoint (a GET — which also registers the
+        # call's bridge + hosts the opening audio server-side) and embed it
+        # inline in the callout's actions. A consistent call_id makes the SCCO's
+        # recordMessage eventUrl point back to the bridge we just registered, so
+        # the per-turn loop works.
+        import uuid
+
+        call_id = f"ivr-{uuid.uuid4().hex[:12]}"
+        sep = "&" if "?" in args.inline_ivr else "?"
+        fetch_url = (f"{args.inline_ivr}{sep}call_id={call_id}"
+                     f"&from={args.from_number}&to={args.to_number}")
+        print(f"GET {fetch_url}")
+        sr = httpx.get(fetch_url, timeout=15.0)
+        sr.raise_for_status()
+        scco = sr.json()
+        print(f"  pre-fetched SCCO: {json.dumps(scco, ensure_ascii=False)}")
+        body["actions"] = scco
+    elif args.answer_url:
+        # Plain answer_url in the body — works for INBOUND (dashboard) but NOT
+        # outbound callout (Stringee doesn't fetch it). Use --inline-ivr instead.
         body["answer_url"] = args.answer_url
-        body["actions"] = []
     else:
         body["actions"] = [{"action": "talk", "text": args.text}]
 
     url = f"{adapter._base_url}/v1/call2/callout"
     print(f"POST {url}")
     print(f"  from={args.from_number}  to={args.to_number}")
-    print(f"  actions={json.dumps(body['actions'], ensure_ascii=False)}")
+    print(f"  answer_url={body.get('answer_url')}  actions={json.dumps(body.get('actions'), ensure_ascii=False)}")
+
+    if args.dry_run:
+        print("\n[dry-run] not placing the call. Full body:")
+        print(json.dumps(body, indent=2, ensure_ascii=False))
+        return 0
 
     resp = httpx.post(url, headers=adapter._headers(), json=body, timeout=30.0)
     print(f"\nHTTP {resp.status_code}")
