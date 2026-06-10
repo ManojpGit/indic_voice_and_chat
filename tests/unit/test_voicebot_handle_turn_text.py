@@ -189,3 +189,56 @@ async def test_handle_turn_text_passes_cancel_event_to_engine():
 
     await agent.handle_turn_text("hi", sink, cancel_event=sentinel)
     assert captured["cancel_event"] is sentinel
+
+
+# --- apply_signal (shared by the cascade + the S2S Live bridge) -------------
+
+def _agent_with_slots(schema):
+    return VoiceBotAgent(
+        session=AgentSession(session_id="t1", lead_data={}),
+        state_machine=AgentStateMachine(),
+        slot_schema=schema,
+        script=VoiceBotScript(agent_name="Anaaya", agent_role="sales", company_name="X"),
+        engine=_FakeEngine(None),
+        store=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_signal_records_transcript_slots_sentiment():
+    from src.agents.state_machine import Event, State
+    schema = SlotSchema.from_campaign_yaml(
+        {"interest_level": {"type": "enum", "values": ["hot", "warm", "cold"]}})
+    agent = _agent_with_slots(schema)
+    await agent.start()
+    await agent.state.fire(Event.UTTERANCE_COMPLETE)  # LISTENING -> PROCESSING
+    applied = await agent.apply_signal(
+        user_text="haan bhej do", agent_text="ज़रूर!",
+        action="send_info", updated_slots={"interest_level": "hot"}, sentiment="positive")
+    assert [(t.role, t.content) for t in agent.session.turns][-2:] == \
+        [("user", "haan bhej do"), ("assistant", "ज़रूर!")]
+    assert applied.get("interest_level") == "hot"
+    assert agent.slots.values.get("interest_level") == "hot"
+    assert agent.session.sentiment_history == ["positive"]
+    assert agent.state.state is State.LISTENING  # send_info -> back to listening
+
+
+@pytest.mark.asyncio
+async def test_apply_signal_end_action_transitions_to_ended():
+    from src.agents.state_machine import Event, State
+    agent = _agent_with_slots(SlotSchema())
+    await agent.start()
+    await agent.state.fire(Event.UTTERANCE_COMPLETE)
+    await agent.apply_signal(user_text="bye", agent_text="dhanyavaad jee", action="close_positive")
+    assert agent.state.state is State.ENDED
+
+
+@pytest.mark.asyncio
+async def test_apply_signal_escalation_action_transitions_to_ended():
+    from src.agents.state_machine import Event, State
+    agent = _agent_with_slots(SlotSchema())
+    await agent.start()
+    await agent.state.fire(Event.UTTERANCE_COMPLETE)
+    await agent.apply_signal(user_text="transfer me", agent_text="jee, transfer kar rahi hoon",
+                             action="transfer")
+    assert agent.state.state is State.ENDED

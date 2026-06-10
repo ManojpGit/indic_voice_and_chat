@@ -208,34 +208,62 @@ class VoiceBotAgent(BaseAgent):
                 pipeline=pipeline_result,
             )
 
-        self.session.turns.append(
-            LLMMessage(role="user", content=pipeline_result.user_text)
+        response = parse_voicebot_response(pipeline_result.agent_text)
+        await self.apply_signal(
+            user_text=pipeline_result.user_text,
+            agent_text=response.response_text,
+            action=response.action,
+            updated_slots=response.updated_slots,
+            sentiment=response.sentiment,
+            phase=response.conversation_phase,
+            metrics_dict=pipeline_result.metrics.__dict__,
         )
-        await self.persist_turn("user", pipeline_result.user_text)
+        return TurnOutcome(response=response, pipeline=pipeline_result)
+
+    async def apply_signal(
+        self,
+        *,
+        user_text: str,
+        agent_text: str,
+        action: str,
+        updated_slots: Optional[dict[str, Any]] = None,
+        sentiment: Optional[str] = None,
+        phase: Optional[str] = None,
+        metrics_dict: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Record one completed turn (transcript + slots + sentiment) and advance
+        the state machine from the turn's ``action``. Shared by the cascade
+        (_finish_turn, which parses the JSON envelope) and the S2S Live bridge
+        (which gets the same fields from a ``record_turn_signal`` tool-call).
+
+        Assumes the machine is mid-turn (an utterance completed): fires
+        LLM_RESPONSE_READY, then the action-appropriate transition back to
+        LISTENING / ESCALATING->ENDED / ENDED. Returns the applied slot dict."""
+        if user_text:
+            self.session.turns.append(LLMMessage(role="user", content=user_text))
+            await self.persist_turn("user", user_text)
 
         await self.state.fire(Event.LLM_RESPONSE_READY)
 
-        response = parse_voicebot_response(pipeline_result.agent_text)
-        applied = self.slots.apply_updates(response.updated_slots)
+        applied = self.slots.apply_updates(updated_slots or {})
 
-        self.session.turns.append(
-            LLMMessage(role="assistant", content=response.response_text)
-        )
-        await self.persist_turn(
-            "agent",
-            response.response_text,
-            metadata={
-                "action": response.action,
-                "sentiment": response.sentiment,
-                "phase": response.conversation_phase,
-                "applied_slots": applied,
-                "metrics": pipeline_result.metrics.__dict__,
-            },
-        )
-        if response.sentiment:
-            self.session.sentiment_history.append(response.sentiment)
+        if agent_text:
+            self.session.turns.append(LLMMessage(role="assistant", content=agent_text))
+            await self.persist_turn(
+                "agent",
+                agent_text,
+                metadata={
+                    "action": action,
+                    "sentiment": sentiment,
+                    "phase": phase,
+                    "applied_slots": applied,
+                    "metrics": metrics_dict or {},
+                },
+            )
+        if sentiment:
+            self.session.sentiment_history.append(sentiment)
 
-        if response.action in _ESCALATION_ACTIONS:
+        if action in _ESCALATION_ACTIONS:
             # RESPONDING -> ESCALATING -> ENDED. We complete the escalation
             # immediately: the agent's conversational role is done (the actual
             # transfer/callback is handled downstream from the disposition), and
@@ -243,14 +271,14 @@ class VoiceBotAgent(BaseAgent):
             # ("handle_turn_text called from escalating, expected listening").
             await self.state.fire(Event.ESCALATION_REQUESTED)
             await self.state.fire(Event.ESCALATION_COMPLETE)
-        elif response.action in _END_ACTIONS:
+        elif action in _END_ACTIONS:
             await self.state.fire(Event.RESPONSE_DELIVERED)
             await self.state.fire(Event.HANGUP)
         else:
             await self.state.fire(Event.RESPONSE_DELIVERED)
 
-        await self.persist_state(extra={"last_action": response.action})
-        return TurnOutcome(response=response, pipeline=pipeline_result)
+        await self.persist_state(extra={"last_action": action})
+        return applied
 
     async def handle_turn_text(
         self, user_text: str, audio_sink: AudioSink, cancel_event=None
