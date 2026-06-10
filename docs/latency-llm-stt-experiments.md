@@ -17,6 +17,7 @@
 | 2 | Will deploying to a cloud instance reduce latency? | **Only modestly.** Worth doing for production reasons (kills ngrok, region co-location, jitter), not a transformation. | The dominant cost is provider-side LLM/TTS inference, which is location-independent. |
 | 3 | Adopt Deepgram streaming STT (replacing batch Groq)? | **Yes — keep streaming on for the dev console**, `endpointing=300ms`, model `nova-2 hi`. | Better Hinglish transcription, rock-solid reliability, ~0.7s off the pre-response gap, live partials. |
 | 4 | Where is the remaining latency bottleneck? | **The LLM (and TTS) inference**, not STT or server placement. | Consistent across all three experiments: in-turn time ≈ unchanged regardless of STT/host. |
+| 5 | Can prompt-trim / TTS-timing / perceptual fillers cut first-word latency? | **No — the floor is model-bound.** Kept the trims (harmless/cheaper) + a subtle breath cue. Sliding-window context fixes long-call growth; endpointing 200→400ms fixes turn-taking. | First-word ~3.2s / TTFT ~2.1s unmoved across the levers; a sub-second filler can't mask a ~3s gap. |
 
 ---
 
@@ -197,3 +198,32 @@ The in-turn numbers (~2.5s first-audio, ~4.7s total) are **essentially identical
 **Decision: NO-GO under the pure-safe constraint.** Sending a complete sentence + `flush` yields a **single chunk** at ~the same latency as one-shot — no first-chunk advantage from a safe drop-in swap. The streaming win only appears if **text is fed incrementally** (stream LLM tokens straight into the Sarvam WS so it synthesizes sub-sentence pieces overlapping LLM generation). That is sub-sentence synthesis — the **prosody risk (Lever C)** explicitly excluded from this effort. So there is no zero-quality-risk latency win here today.
 
 **Consequence:** code-only speed work concludes with **Lever A only** (the `endpoint_gap_ms` metric, shipped). The remaining real latency levers are the **deferred Mumbai deploy** (~400ms TTS network) and — only if the prosody tradeoff is later accepted — **token-streaming LLM→Sarvam-WS** (overlap LLM+TTS; bounded by LLM token rate; needs A/B + listen test). Both are future efforts, not pure-safe.
+
+---
+
+## Experiment 5 — Dialogue/latency tuning pass (2026-06-10)
+
+**Goal:** reduce *felt* first-word latency on the streaming dev-console path via three levers — fewer prompt tokens, earlier first audio, and perceptual masking — plus fix two side issues found while testing (long-call slowdown, premature turn-taking). Shipped in PR #16.
+
+**Levers built (each its own commit, A/B'd via the `"browser turn (stream)"` log medians):**
+1. **Prompt trim** — replaced the verbatim `VOICEBOT_RESPONSE_SCHEMA` `json.dumps(indent=2)` (~50 lines) with a terse field spec, compacted `lead_data`, and de-padded the fixed scaffolding (semantics preserved; all field names/enums kept). Assembled prompt ~5,541 chars (~1,385 est tok, from ~1,558).
+2. **Shorter first chunk** — `SentenceDetector(first_chunk_soft=True)`: the FIRST emitted fragment breaks on a clause boundary (comma/em-dash, min 8 chars, 40-char word-boundary cap) so Sarvam starts on a shorter leading piece; reverts to full sentences after. Costs one extra Sarvam call/turn.
+3. **Perceptual masking (filler)** — a clip played the instant a turn dispatches, masking the gap before the reply.
+
+**Readings (this session, dev console, Gemini 2.5-flash + Sarvam, local):**
+
+| metric | baseline (median) | after prompt-trim + first-chunk (9 turns, median) |
+|---|---|---|
+| `llm_ttft_ms` | ~2000–2128 | **2141** (flat) |
+| `tts_first_ms` | ~3100–3328 | **3224** (~flat, within noise) |
+| `tts_first − llm_ttft` (1st-sentence + Sarvam) | ~1100 | ~1083 (flat) |
+
+**Findings:**
+- **No measurable win.** Prompt-trim left `llm_ttft_ms` unchanged (consistent with the Exp-1 caching dead-end: TTFT is model-inherent at this prompt size, and even a smaller prompt didn't move it). Shorter-first-chunk left the post-TTFT portion flat at n=9. Kept both — harmless, and the trim is cheaper tokens — but neither is a real latency lever.
+- **Perceptual masking does not work for a ~3s model-bound gap.** Three filler attempts, all rejected by ear: (a) TTS-spoken words ("जी…/एक मिनट…") sounded robotic; (b) **synthetic** breath (band-passed noise + inhale envelope) sounded like static; (c) a **real recorded** breath false-started — a sub-second breath at turn start, then ~1.7s of silence before the reply, feels *worse* than honest silence. A clip that actually masks 3s would have to be ~3s long, which can't sound natural. Settled on a very quiet (peak 0.02), late (0.7s lead-in) real breath as a subtle "thinking" cue — it does **not** reduce felt latency, it just softens the dead air. The clip is padded with leading silence (not an in-code sleep) so it never delays the reply.
+
+**Side fixes found while testing:**
+- **Sliding-window context** — the engine had been re-sending the *entire* transcript to the LLM every turn (no trimming), so the prompt grew ~2 messages/turn and per-turn latency climbed as a call went on ("agent slower after a while"). Now sends system prompt + last `MAX_HISTORY_TURNS` (6) exchanges; full transcript stays in `session.turns` for the UI + outcome analysis. Real win — keeps per-turn latency flat over a long call (caps *growth*, not the baseline).
+- **Endpointing 200 → 400ms** — Deepgram finalized speech after only 200ms of trailing silence, so natural mid-sentence pauses produced premature `endpoint`s and the agent replied to fragments while the user was still talking ("agent interrupted me"). 400ms waits out short pauses; trade is ~+200ms reaction time for no interruptions. (Supersedes the `endpointing=300` in decision #3.)
+
+**Decision & rationale:** **Latency is model-bound — confirmed a fourth time.** Prompt size, TTS-start timing, and perceptual masking do not move the ~3.2s first-word floor; it is LLM inference time. The genuine remaining levers are all quality/cost trades, not tuning: a **faster LLM** (flash-lite rejected for quality in pre-session work), a **streaming/faster TTS** (Exp-4: only helps with sub-sentence synthesis = prosody risk), or the **Mumbai deploy** (~400ms TTS network, deferred). The shipped value of this pass is the **dialogue-quality + robustness** work (CTA de-repetition, sliding-window context, turn-taking), not a latency reduction.
