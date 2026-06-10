@@ -20,9 +20,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
+import wave
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 from src.analysis.call_outcome import analyze_call
 from src.interfaces.llm import LLMMessage
@@ -46,6 +49,27 @@ BARGE_SUSTAIN_MS = 450
 # when the upstream is persistently unavailable.
 _STREAM_REOPEN_BACKOFF_S = 0.3
 _MAX_STREAM_REOPENS = 10
+
+# Pre-recorded "breath" filler clips played the instant a user turn starts to
+# mask the silence before the reply. 16 kHz mono PCM16 (matching the bridge
+# rate); one is chosen at random per turn so it doesn't feel repetitive.
+_FILLER_DIR = Path(__file__).resolve().parents[2] / "static"
+_filler_clips_cache: list[bytes] | None = None
+
+
+def _filler_clips() -> list[bytes]:
+    """Load + cache the raw PCM of every static/breath_*.wav (process-wide)."""
+    global _filler_clips_cache
+    if _filler_clips_cache is None:
+        clips: list[bytes] = []
+        for p in sorted(_FILLER_DIR.glob("breath_*.wav")):
+            try:
+                with wave.open(str(p), "rb") as w:
+                    clips.append(w.readframes(w.getnframes()))
+            except Exception:  # noqa: BLE001 - a bad asset must not break startup
+                log.warning("could not load filler clip %s", p)
+        _filler_clips_cache = clips
+    return _filler_clips_cache
 
 
 @dataclass
@@ -118,6 +142,19 @@ class BrowserVoiceBridge:
         duration_s = len(pcm16) / 2 / self._config.pcm_sample_rate
         self._play_until = max(self._play_until, time.monotonic()) + duration_s
         await self._send_json({"type": "status", "status": "listening"})
+
+    async def _send_filler(self) -> None:
+        """Play a short pre-recorded breath the instant a turn starts, to mask the
+        silence before the reply. A random clip is chosen per turn. Sent via
+        _send_pcm so it extends _play_until (the barge detector treats it as agent
+        audio). Audio-only — never added to the transcript. No-op if no clip is
+        available or a barge already cancelled this turn."""
+        clips = _filler_clips()
+        if not clips:
+            return
+        pcm = random.choice(clips)
+        if pcm and not (self._cancel_event is not None and self._cancel_event.is_set()):
+            await self._send_pcm(pcm)
 
     # --- entrypoint ---------------------------------------------------
 
@@ -412,6 +449,10 @@ class BrowserVoiceBridge:
             self._cancel_event = asyncio.Event()
             await self._send_json({"type": "status", "status": "thinking"})
             await self._send_json({"type": "partial", "role": "user", "text": ""})
+            # Breath filler: sent AFTER _cancel_event exists so a barge during the
+            # breath cancels the upcoming turn cleanly; before the LLM so it masks
+            # the latency.
+            await self._send_filler()
             outcome = await self._agent.handle_turn_text(
                 text, self._send_pcm, cancel_event=self._cancel_event
             )
