@@ -4,10 +4,11 @@ import asyncio
 import json
 import logging
 import time
+import time as _time
 
 import pytest
 
-from src.api.browser_bridge import BrowserVoiceBridge, BrowserBridgeConfig
+from src.api.browser_bridge import BrowserBridgeConfig, BrowserVoiceBridge
 from src.interfaces.stt import STTStreamEvent
 from src.pipeline.vad import EnergyVAD
 
@@ -98,6 +99,8 @@ async def test_endpoint_event_dispatches_text_turn():
         STTStreamEvent(type="endpoint", text="और कुछ benefits हैं"),
     ])
     await bridge._consume_stream_events(session)
+    if bridge._turn_task is not None:
+        await bridge._turn_task          # turn now runs as a background task
     assert bridge._agent.text_turns == ["और कुछ benefits हैं"]
     transcripts = [m for m in bridge._ws.sent_json
                    if m.get("type") == "transcript" and m.get("role") == "user"]
@@ -110,6 +113,28 @@ async def test_endpoint_ignored_while_agent_busy():
     bridge._agent_busy = True
     await bridge._consume_stream_events(session)
     assert bridge._agent.text_turns == []
+
+
+@pytest.mark.asyncio
+async def test_endpoint_does_not_dispatch_while_prior_turn_unwinding():
+    # After a barge, _handle_barge_in clears _agent_busy synchronously while the
+    # cancelled turn task is STILL unwinding (parked at an await). A fast endpoint
+    # must NOT slip through and dispatch a second turn over that still-live task.
+    bridge, session = _bridge([STTStreamEvent(type="endpoint", text="और कुछ")])
+    bridge._agent_busy = False  # as a barge would leave it
+    # A still-pending turn task standing in for the unwinding cancelled turn.
+    pending = asyncio.create_task(asyncio.Event().wait())
+    bridge._turn_task = pending
+    try:
+        await bridge._consume_stream_events(session)
+        assert bridge._agent.text_turns == []        # no second turn dispatched
+        assert bridge._turn_task is pending          # task not reassigned
+    finally:
+        pending.cancel()
+        try:
+            await pending
+        except asyncio.CancelledError:
+            pass
 
 
 # --- playback echo gate (fix for "stuck in listening") ------------------
@@ -209,6 +234,7 @@ async def test_stream_consumer_stops_without_reopen_when_call_ended(monkeypatch)
 
 def test_build_streaming_provider_from_tenant():
     from types import SimpleNamespace
+
     from src.api.dev_console import _build_stream_provider
 
     tenant = SimpleNamespace(
@@ -227,6 +253,7 @@ def test_build_streaming_provider_from_tenant():
 
 def test_build_streaming_provider_none_when_unconfigured():
     from types import SimpleNamespace
+
     from src.api.dev_console import _build_stream_provider
 
     tenant = SimpleNamespace(
@@ -272,7 +299,7 @@ async def test_cancelled_turn_skips_agent_transcript():
                 pipeline = TurnResult("u", "hi", 1.0, "{}", 0, TurnMetrics(), cancelled=True)
             return _O()
 
-    from src.api.browser_bridge import BrowserVoiceBridge, BrowserBridgeConfig
+    from src.api.browser_bridge import BrowserBridgeConfig, BrowserVoiceBridge
     from src.pipeline.vad import EnergyVAD
     bridge = BrowserVoiceBridge(
         websocket=_FakeWS(), agent=_CancelAgent(),
@@ -287,17 +314,6 @@ async def test_cancelled_turn_skips_agent_transcript():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_arms_then_disarms_barge():
-    # A normal turn should arm barge-in at the start and disarm at the end, so
-    # the browser only allows interruptions during a cancellable turn.
-    bridge, session = _bridge([])
-    await bridge._dispatch_text_turn("hi")
-    barge = [m for m in bridge._ws.sent_json if m.get("type") == "barge"]
-    assert barge[0] == {"type": "barge", "armed": True}
-    assert barge[-1] == {"type": "barge", "armed": False}
-
-
-@pytest.mark.asyncio
 async def test_endpoint_gap_ms_logged(caplog):
     bridge, session = _bridge([
         STTStreamEvent(type="interim", text="haan"),
@@ -305,7 +321,163 @@ async def test_endpoint_gap_ms_logged(caplog):
     ])
     with caplog.at_level(logging.INFO):
         await bridge._consume_stream_events(session)
+        if bridge._turn_task is not None:
+            await bridge._turn_task          # turn now runs as a background task
     recs = [r for r in caplog.records if r.message == "browser turn (stream)"]
     assert recs, "no 'browser turn (stream)' log emitted"
     gap = getattr(recs[0], "endpoint_gap_ms", None)
     assert gap is not None and gap >= 0
+
+
+@pytest.mark.asyncio
+async def test_config_message_enables_barge():
+    bridge, _ = _bridge([])
+    bridge._apply_control({"type": "config", "barge": True})
+    assert bridge._barge_enabled is True
+    bridge._apply_control({"type": "config", "barge": False})
+    assert bridge._barge_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_barge_guard_fires_during_playback_only(monkeypatch):
+    bridge, _ = _bridge([])
+    bridge._agent_busy = False
+    bridge._cancel_event = asyncio.Event()
+    bridge._play_until = _time.monotonic() + 5
+    bridge._handle_barge_in()
+    assert bridge._cancel_event.is_set()
+    assert bridge._play_until == 0.0
+
+
+@pytest.mark.asyncio
+async def test_barge_guard_noop_when_agent_silent(monkeypatch):
+    bridge, _ = _bridge([])
+    bridge._agent_busy = False
+    bridge._play_until = 0.0
+    bridge._cancel_event = asyncio.Event()
+    bridge._handle_barge_in()
+    assert not bridge._cancel_event.is_set()
+
+
+@pytest.fixture
+def _clock(monkeypatch):
+    import src.api.browser_bridge as bb
+    t = {"now": 1000.0}
+    monkeypatch.setattr(bb.time, "monotonic", lambda: t["now"])
+    monkeypatch.setattr(bb, "BARGE_SUSTAIN_MS", 450)
+    return t
+
+
+def _armed_bridge():
+    bridge, _ = _bridge([])
+    bridge._barge_enabled = True
+    bridge._had_turn = True
+    bridge._agent_busy = True       # agent audible
+    return bridge
+
+
+def test_barge_on_interim_fires_when_sustained(_clock):
+    bridge = _armed_bridge()
+    assert bridge._barge_on_interim() is False          # first interim -> start timer
+    _clock["now"] += 0.5                                 # 500ms > 450ms threshold
+    assert bridge._barge_on_interim() is True            # sustained -> fire
+    assert bridge._barge_start_t is None                 # reset so it can't re-fire
+
+
+def test_barge_on_interim_no_fire_for_short_backchannel(_clock):
+    bridge = _armed_bridge()
+    assert bridge._barge_on_interim() is False
+    _clock["now"] += 0.2                                 # 200ms < 450ms
+    assert bridge._barge_on_interim() is False
+
+
+def test_barge_on_interim_no_fire_when_not_audible(_clock):
+    bridge = _armed_bridge()
+    bridge._agent_busy = False
+    bridge._play_until = 0.0                              # agent NOT audible
+    assert bridge._barge_on_interim() is False
+    _clock["now"] += 1.0
+    assert bridge._barge_on_interim() is False
+    assert bridge._barge_start_t is None
+
+
+def test_barge_on_interim_disabled_or_no_turn(_clock):
+    bridge = _armed_bridge()
+    bridge._barge_enabled = False
+    assert bridge._barge_on_interim() is False
+    bridge._barge_enabled = True
+    bridge._had_turn = False
+    assert bridge._barge_on_interim() is False
+
+
+@pytest.mark.asyncio
+async def test_agent_busy_reset_when_turn_raises():
+    """_agent_busy must be cleared even when handle_turn_text raises (Fix 1)."""
+    bridge, _ = _bridge([])
+
+    async def _boom(*a, **k):
+        raise RuntimeError("turn blew up")
+
+    bridge._agent.handle_turn_text = _boom
+    bridge._agent_busy = True
+    bridge._cancel_event = asyncio.Event()
+    with pytest.raises(RuntimeError, match="turn blew up"):
+        await bridge._dispatch_text_turn("hi")
+    assert bridge._agent_busy is False  # not wedged
+
+
+@pytest.mark.asyncio
+async def test_consumer_barges_on_sustained_interim(monkeypatch):
+    import src.api.browser_bridge as bb
+    monkeypatch.setattr(bb, "BARGE_SUSTAIN_MS", 0)   # any 2nd interim while audible fires
+    bridge, session = _bridge([
+        STTStreamEvent(type="interim", text="ru"),
+        STTStreamEvent(type="interim", text="ruko"),
+    ])
+    bridge._barge_enabled = True
+    bridge._had_turn = True
+    bridge._agent_busy = True                          # a turn is "in flight"
+    bridge._cancel_event = asyncio.Event()
+    bridge._play_until = 0.0
+    await bridge._consume_stream_events(session)
+    assert bridge._cancel_event.is_set()               # barge cancelled the turn
+    interrupts = [m for m in bridge._ws.sent_json if m.get("type") == "interrupt"]
+    assert interrupts                                  # client told to stop playback
+
+
+@pytest.mark.asyncio
+async def test_consumer_no_barge_when_disabled(monkeypatch):
+    import src.api.browser_bridge as bb
+    monkeypatch.setattr(bb, "BARGE_SUSTAIN_MS", 0)
+    bridge, session = _bridge([
+        STTStreamEvent(type="interim", text="ru"),
+        STTStreamEvent(type="interim", text="ruko"),
+    ])
+    bridge._barge_enabled = False                      # off
+    bridge._had_turn = True
+    bridge._agent_busy = True
+    bridge._cancel_event = asyncio.Event()
+    await bridge._consume_stream_events(session)
+    assert not bridge._cancel_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_mic_fed_during_playback_when_barge_enabled():
+    bridge, session = _bridge([])
+    bridge._stream_session = session
+    bridge._agent_busy = False
+    bridge._play_until = _time.monotonic() + 5         # agent audio still playing
+    bridge._barge_enabled = True
+    await bridge._on_pcm_frame(b"\x01\x02" * 160)
+    assert session.sent == [b"\x01\x02" * 160]         # fed (so Deepgram can hear the interruption)
+
+
+@pytest.mark.asyncio
+async def test_mic_gated_during_playback_when_barge_disabled():
+    bridge, session = _bridge([])
+    bridge._stream_session = session
+    bridge._agent_busy = False
+    bridge._play_until = _time.monotonic() + 5
+    bridge._barge_enabled = False
+    await bridge._on_pcm_frame(b"\x01\x02" * 160)
+    assert session.sent == []                          # echo gate still drops it

@@ -22,7 +22,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.analysis.call_outcome import analyze_call
 from src.interfaces.llm import LLMMessage
@@ -36,6 +36,10 @@ BROWSER_SAMPLE_RATE = 16000
 
 # Chunk size for outbound PCM frames (bytes). 8 KB ~= 256 ms @16 kHz PCM16.
 _SEND_CHUNK = 8192
+
+# Barge-in: required sustained recognized-speech (ms) while the agent is audible
+# before we treat it as an interruption (vs a one-word "haan/hmm" backchannel).
+BARGE_SUSTAIN_MS = 450
 
 # Streaming-STT resilience: if Deepgram drops the socket mid-call, reopen it
 # rather than wedging the turn loop. Backoff + cap guard against a tight spin
@@ -84,6 +88,10 @@ class BrowserVoiceBridge:
         self._stream_session = None
         self._agent_busy = False
         self._cancel_event = None  # set per in-flight streaming turn; barge-in fires it
+        self._barge_enabled = False     # set by the client's {"type":"config","barge":...}
+        self._turn_task = None          # in-flight turn runs as a task so barge can interrupt it
+        self._barge_start_t = None      # monotonic time the current interruption's speech began
+        self._had_turn = False          # opening is not barge-able; arm only after the first turn
         self._llm = llm
         self._tenant_timezone = tenant_timezone
         self._last_action: str | None = None
@@ -158,9 +166,8 @@ class BrowserVoiceBridge:
                         ctrl = json.loads(text)
                     except (ValueError, TypeError):
                         ctrl = {}
-                    if ctrl.get("type") == "barge_in":
-                        self._handle_barge_in()
-                    elif ctrl.get("type") == "end":
+                    self._apply_control(ctrl)
+                    if ctrl.get("type") == "end":
                         # Graceful client-initiated end: deliver the outcome while
                         # the socket is still open, then stop the loop. break (not
                         # continue) so exit_reason isn't overwritten by the while/else.
@@ -178,6 +185,16 @@ class BrowserVoiceBridge:
             )
             if stream_task is not None:
                 stream_task.cancel()
+                try:
+                    await stream_task
+                except BaseException:  # noqa: BLE001 - cancellation during teardown
+                    pass
+            if self._turn_task is not None and not self._turn_task.done():
+                self._turn_task.cancel()
+                try:
+                    await self._turn_task
+                except BaseException:  # noqa: BLE001 - cancellation during teardown
+                    pass
             if self._stream_session is not None:
                 try:
                     await self._stream_session.aclose()
@@ -228,14 +245,12 @@ class BrowserVoiceBridge:
         # the mic while the agent speaks; the _agent_busy gate is belt-and-braces
         # so the agent's own audio is never streamed to the recognizer.
         if self._stream_session is not None:
-            # Don't feed the recognizer while the agent is generating a reply
-            # (_agent_busy) OR while its audio is still playing on the client
-            # (now < _play_until). Otherwise the agent's own voice (echo) reaches
-            # Deepgram as a continuous audio stream, which prevents it from
-            # detecting an utterance-end gap — endpointing then stalls for many
-            # seconds after the reply (the "stuck in listening" symptom), only
-            # recovering once a real silence finally appears.
-            if self._agent_busy or time.monotonic() < self._play_until:
+            # Half-duplex echo gate — drop the agent's own audio. Skipped in
+            # barge mode: headphones ⇒ no echo, and we need the user's audio
+            # during playback to detect an interruption.
+            if not self._barge_enabled and (
+                self._agent_busy or time.monotonic() < self._play_until
+            ):
                 return
             try:
                 await self._stream_session.send(pcm16)
@@ -358,8 +373,17 @@ class BrowserVoiceBridge:
                     await self._send_json(
                         {"type": "partial", "role": "user", "text": ev.text}
                     )
+                    if self._barge_on_interim():
+                        self._handle_barge_in()
+                        await self._send_json({"type": "interrupt"})
                 elif ev.type == "endpoint":
-                    if self._agent_busy or not ev.text.strip():
+                    # turn_in_flight guards against a still-unwinding cancelled
+                    # (barged) turn — which clears _agent_busy before its task
+                    # finishes — clobbering the new turn's state.
+                    turn_in_flight = (
+                        self._turn_task is not None and not self._turn_task.done()
+                    )
+                    if self._agent_busy or turn_in_flight or not ev.text.strip():
                         last_interim_t = None
                         continue
                     gap_ms = (
@@ -367,24 +391,33 @@ class BrowserVoiceBridge:
                         if last_interim_t is not None else None
                     )
                     last_interim_t = None
-                    await self._dispatch_text_turn(ev.text, endpoint_gap_ms=gap_ms)
+                    # Set _agent_busy BEFORE create_task to close the race with a
+                    # second endpoint; run the turn as a task so this loop stays
+                    # free to read interims (and detect a barge) during the reply.
+                    self._agent_busy = True
+                    self._had_turn = True
+                    self._turn_task = asyncio.create_task(
+                        self._dispatch_text_turn(ev.text, endpoint_gap_ms=gap_ms)
+                    )
         except Exception:  # noqa: BLE001 - never let the consumer die silently
             log.exception("stream event consumer crashed")
 
     async def _dispatch_text_turn(self, text: str, endpoint_gap_ms: int | None = None) -> None:
         """Run one turn from an already-transcribed utterance (streaming path)."""
+        # Everything from _agent_busy=True onward is inside the try so a
+        # cancellation/send-failure parked at any of the pre-turn sends still
+        # resets _agent_busy (else the consumer wedges with _agent_busy stuck True).
         self._agent_busy = True
-        self._cancel_event = asyncio.Event()
-        await self._send_json({"type": "status", "status": "thinking"})
-        # Arm browser barge-in only now that a cancellable turn is in progress
-        # (not during the opening — that lets the agent's greeting play fully and
-        # gives the browser echo-canceller time to converge before the first turn).
-        await self._send_json({"type": "barge", "armed": True})
-        await self._send_json({"type": "partial", "role": "user", "text": ""})
         try:
+            self._cancel_event = asyncio.Event()
+            await self._send_json({"type": "status", "status": "thinking"})
+            await self._send_json({"type": "partial", "role": "user", "text": ""})
             outcome = await self._agent.handle_turn_text(
                 text, self._send_pcm, cancel_event=self._cancel_event
             )
+        except BaseException:  # noqa: BLE001 - cancel/teardown/error must not wedge _agent_busy
+            self._agent_busy = False
+            raise
         finally:
             self._cancel_event = None
 
@@ -394,7 +427,6 @@ class BrowserVoiceBridge:
         if outcome.pipeline.cancelled:
             await self._emit_state()
             self._agent_busy = False
-            await self._send_json({"type": "barge", "armed": False})
             await self._send_json({"type": "status", "status": "listening"})
             return
 
@@ -433,14 +465,26 @@ class BrowserVoiceBridge:
                 await asyncio.sleep(remaining + 0.5)
             return
         self._agent_busy = False
-        await self._send_json({"type": "barge", "armed": False})
         await self._send_json({"type": "status", "status": "listening"})
+
+    def _apply_control(self, ctrl: dict) -> None:
+        """Handle a client control message (called from the run() WS loop)."""
+        if ctrl.get("type") == "config":
+            self._barge_enabled = bool(ctrl.get("barge"))
+        elif ctrl.get("type") == "barge_in":
+            # Retained transport-agnostic entry point: a future server-side/
+            # telephony detector can request a barge via this control message
+            # (the dev console now detects server-side, not via this message).
+            self._handle_barge_in()
 
     def _handle_barge_in(self) -> None:
         """Cancel the in-flight turn so the agent stops mid-utterance. Idempotent;
         no-op when the agent isn't speaking. Transport-agnostic — a future
         server-side (telephony) detector can call this same entry point."""
-        if not self._agent_busy:
+        # Fire whenever the agent is AUDIBLE — generating (_agent_busy) OR its
+        # audio is still playing (now < _play_until). Most interruptions land
+        # during playback, after generation finished and _agent_busy is False.
+        if not (self._agent_busy or time.monotonic() < self._play_until):
             return
         if self._cancel_event is not None:
             self._cancel_event.set()
@@ -450,6 +494,26 @@ class BrowserVoiceBridge:
         # until the cancelled reply's original end time.
         self._play_until = 0.0
         log.info("barge-in: cancelling current turn")
+
+    def _barge_on_interim(self) -> bool:
+        """Per-interim barge detector. True iff the user's speech has sustained
+        past BARGE_SUSTAIN_MS while the agent is audible. Resets its timer when
+        barge is off / no turn yet / the agent isn't audible."""
+        if not (self._barge_enabled and self._had_turn):
+            self._barge_start_t = None
+            return False
+        now = time.monotonic()
+        audible = self._agent_busy or now < self._play_until
+        if not audible:
+            self._barge_start_t = None
+            return False
+        if self._barge_start_t is None:
+            self._barge_start_t = now
+            return False
+        if now - self._barge_start_t >= BARGE_SUSTAIN_MS / 1000:
+            self._barge_start_t = None
+            return True
+        return False
 
     async def _emit_outcome(self) -> None:
         """Analyze the finished call and push the outcome to the browser. Idempotent."""
@@ -467,7 +531,7 @@ class BrowserVoiceBridge:
                 telephony_status=None,
                 final_action=self._last_action,
                 tenant_timezone=self._tenant_timezone,
-                now=datetime.now(timezone.utc),
+                now=datetime.now(UTC),
                 llm=self._llm,
             )
         except Exception:  # noqa: BLE001 - never let analysis break teardown

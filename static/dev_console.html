@@ -53,11 +53,6 @@
 <script>
 const TARGET_RATE = 16000;
 let ws, audioCtx, micStream, workletNode, playCursor = 0, agentSpeaking = false, running = false;
-let bargeArmed = false;   // server arms barge-in only during a cancellable turn (not the opening)
-
-const BARGE_RMS = 0.006;  // mic energy (post-AEC) to count as user speech — measured: speech ~0.008-0.012, echo floor <0.005
-const BARGE_MS  = 120;    // sustained speech required before cutting off the agent
-let   bargeMs   = 0;
 const activeSources = new Set();   // scheduled playback nodes, so we can stop them
 
 const $ = (id) => document.getElementById(id);
@@ -136,6 +131,12 @@ function stopPlayback() {
   playCursor = audioCtx.currentTime;   // nothing scheduled ahead anymore
 }
 
+function sendBargeConfig() {
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type: "config", barge: $("bargeIn").checked }));
+}
+$("bargeIn").addEventListener("change", sendBargeConfig);
+
 const WORKLET_CODE = `
 class CaptureProcessor extends AudioWorkletProcessor {
   process(inputs) {
@@ -157,6 +158,7 @@ async function start() {
   ws.onopen = async () => {
     console.log("[devconsole] ws open; sending hello + wiring audio");
     ws.send(JSON.stringify({ type: "hello", tenant: "dev" }));
+    sendBargeConfig();
     try {
       // micStream + audioCtx were already acquired during the click gesture.
       const blobUrl = URL.createObjectURL(new Blob([WORKLET_CODE], { type: "application/javascript" }));
@@ -167,28 +169,10 @@ async function start() {
         if (!running) return;
         const stillPlaying = playCursor > audioCtx.currentTime + 0.05;
         const speaking = agentSpeaking || stillPlaying;
-        if ($("halfDuplex").checked && speaking) {
-          // Agent is speaking. Only detect interruptions when barge-in is enabled
-          // AND the server has armed it (a cancellable turn — not the opening).
-          if (!$("bargeIn").checked || !bargeArmed) { bargeMs = 0; return; }
-          // Barge-in on: VAD the echo-cancelled mic for sustained user speech.
-          let sum = 0;
-          for (let i = 0; i < e.data.length; i++) sum += e.data[i] * e.data[i];
-          const rms = Math.sqrt(sum / e.data.length);
-          const frameMs = (e.data.length / audioCtx.sampleRate) * 1000;
-          // Decay (not hard-reset) on sub-threshold frames so natural dips
-          // between syllables don't keep restarting the sustained-speech timer.
-          bargeMs = rms > BARGE_RMS ? bargeMs + frameMs : Math.max(0, bargeMs - frameMs);
-          if (bargeMs < BARGE_MS) return;          // not enough sustained speech yet
-          // Confirmed interruption: stop the agent instantly + tell the server.
-          bargeMs = 0;
-          stopPlayback();
-          agentSpeaking = false;
-          if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "barge_in" }));
-          // fall through → stream this frame and the rest of the interruption
-        } else {
-          bargeMs = 0;
-        }
+        // Half-duplex (speakers): mute the mic while the agent speaks. Skipped
+        // when barge-in is on — the server needs the mic to hear interruptions
+        // (headphones, no echo). Server-side detection replaces the old client VAD.
+        if ($("halfDuplex").checked && speaking && !$("bargeIn").checked) return;
         const int16 = downsampleToInt16(e.data, audioCtx.sampleRate);
         if (ws.readyState === WebSocket.OPEN) ws.send(int16.buffer);
       };
@@ -219,9 +203,9 @@ async function start() {
       // thinking, or speaking) — not only while audio streams. Otherwise the
       // mic captures noise during those windows and the agent answers itself.
       agentSpeaking = (msg.status !== "listening");
-    } else if (msg.type === "barge") {
-      bargeArmed = !!msg.armed;   // only allow interruptions during a cancellable turn
-      if (!bargeArmed) bargeMs = 0;
+    } else if (msg.type === "interrupt") {
+      stopPlayback();            // server detected a barge: flush buffered audio now
+      agentSpeaking = false;
     } else if (msg.type === "partial") {
       renderPartial(msg.text);
     } else if (msg.type === "transcript") {
