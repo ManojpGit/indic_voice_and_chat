@@ -187,6 +187,10 @@ class BrowserVoiceBridge:
                 stream_task.cancel()
             if self._turn_task is not None and not self._turn_task.done():
                 self._turn_task.cancel()
+                try:
+                    await self._turn_task
+                except BaseException:  # noqa: BLE001 - cancellation during teardown
+                    pass
             if self._stream_session is not None:
                 try:
                     await self._stream_session.aclose()
@@ -401,6 +405,9 @@ class BrowserVoiceBridge:
             outcome = await self._agent.handle_turn_text(
                 text, self._send_pcm, cancel_event=self._cancel_event
             )
+        except BaseException:  # noqa: BLE001 - cancel/teardown/error must not wedge _agent_busy
+            self._agent_busy = False
+            raise
         finally:
             self._cancel_event = None
 

@@ -397,3 +397,19 @@ def test_barge_on_interim_disabled_or_no_turn(_clock):
     bridge._barge_enabled = True
     bridge._had_turn = False
     assert bridge._barge_on_interim() is False
+
+
+@pytest.mark.asyncio
+async def test_agent_busy_reset_when_turn_raises():
+    """_agent_busy must be cleared even when handle_turn_text raises (Fix 1)."""
+    bridge, _ = _bridge([])
+
+    async def _boom(*a, **k):
+        raise RuntimeError("turn blew up")
+
+    bridge._agent.handle_turn_text = _boom
+    bridge._agent_busy = True
+    bridge._cancel_event = asyncio.Event()
+    with pytest.raises(RuntimeError, match="turn blew up"):
+        await bridge._dispatch_text_turn("hi")
+    assert bridge._agent_busy is False  # not wedged
