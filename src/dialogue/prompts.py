@@ -298,6 +298,97 @@ def build_voicebot_system_prompt(
     return "\n\n".join(parts)
 
 
+def build_s2s_system_instruction(
+    script: VoiceBotScript,
+    schema: SlotSchema,
+    lead_data: Optional[dict[str, Any]] = None,
+) -> str:
+    """System instruction for a speech-to-speech (Gemini Live) session.
+
+    Same persona/knowledge as ``build_voicebot_system_prompt`` but WITHOUT the
+    JSON-envelope schema or the Devanagari-only rule: an S2S model speaks the
+    reply directly (so natural Hinglish code-switching is wanted, not forbidden)
+    and self-reports structured control via the ``record_turn_signal`` tool
+    instead of a JSON field.
+    """
+    lead_data = lead_data or {}
+    parts: list[str] = []
+
+    parts.append(
+        f"You are {script.agent_name}, a {script.agent_role} at {script.company_name}. "
+        "You are on a live phone call with a lead. Speak naturally as a human would."
+    )
+    if script.personality:
+        parts.append(f"Your personality: {script.personality}.")
+    if script.conversation_style:
+        parts.append(f"Conversation style: {script.conversation_style}.")
+
+    # Language: speak directly, so natural Hinglish is encouraged (the opposite of
+    # the cascade's Devanagari-only rule, which only existed for the Hindi TTS).
+    parts.append(
+        f"Speak in {script.language_default}. Use natural, warm, conversational Hindi and "
+        "code-switch to English for brand, tech and common words (app, link, casino, bonus, "
+        "WhatsApp) exactly the way Indian speakers do. Match the customer's formality."
+    )
+
+    parts.append(
+        "Core behavior every turn:\n"
+        "1. LISTEN FIRST: answer what the customer actually said, directly and helpfully, in "
+        "your own warm words (draw on the knowledge below — never recite).\n"
+        "2. THEN gently move toward your objective; talking points are material, not a checklist.\n"
+        "3. REDIRECT ONLY WHEN the input is unrelated to this call: briefly acknowledge, then "
+        "steer back. On-topic questions/concerns: answer, never deflect.\n"
+        "4. Keep every reply SHORT — 1-2 sentences. This is a live voice call, not chat."
+    )
+
+    if script.objective:
+        parts.append("Your objective on this call:\n" + script.objective.strip())
+    if script.opening:
+        parts.append(
+            "Opening line (you may open the call with this):\n" + _render_opening(script, lead_data)
+        )
+    if script.talking_points:
+        parts.append("Talking points (material, not a checklist):\n"
+                     + "\n".join(f"- {p}" for p in script.talking_points))
+    if script.qualifying_questions:
+        parts.append("Qualifying questions to ask when natural:\n"
+                     + "\n".join(f"- {q}" for q in script.qualifying_questions))
+    knowledge_items = {**(script.knowledge or {}), **(script.objection_responses or {})}
+    if knowledge_items:
+        parts.append(
+            "Knowledge for answering the customer's questions and concerns (use the substance "
+            "in your own words):\n" + "\n".join(f"- {t}: {r}" for t, r in knowledge_items.items()))
+    if script.closing:
+        parts.append("Closing lines:\n" + "\n".join(f"- {t}: {r}" for t, r in script.closing.items()))
+    if script.dos:
+        parts.append("Do:\n" + "\n".join(f"- {d}" for d in script.dos))
+    if script.donts:
+        parts.append("Don't:\n" + "\n".join(f"- {d}" for d in script.donts))
+
+    if schema.specs:
+        slot_lines = []
+        for name, spec in schema.specs.items():
+            mark = "*" if spec.required else " "
+            extra = (f" (one of: {', '.join(spec.values)})" if spec.values
+                     else f" ({spec.type.value})")
+            slot_lines.append(f"  {mark} {name}{extra}")
+        parts.append("Information to collect (* = required):\n" + "\n".join(slot_lines))
+
+    if lead_data:
+        parts.append("Known lead data: " + json.dumps(lead_data, ensure_ascii=False))
+
+    # Tool-based control: the S2S model self-reports the dialogue action + slots
+    # (replaces the cascade's JSON envelope; consumed by VoiceBotAgent.apply_signal).
+    parts.append(
+        "Whenever you decide a next step or learn something about the customer, CALL the "
+        "record_turn_signal function with `action` (one of continue, clarify, transfer, "
+        "schedule_callback, send_info, close_positive, close_negative, end) and any "
+        "`updated_slots` you learned. Use close_positive/close_negative/end only when the "
+        "call is genuinely over; schedule_callback only once you have a specific day and time."
+    )
+    return "\n\n".join(parts)
+
+
 def build_chatbot_system_prompt(
     company_name: str,
     language_default: str = "en",

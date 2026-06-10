@@ -296,3 +296,29 @@ pipeline:
     assert t.pipeline.llm.provider == "groq"
     assert t.pipeline.stt.provider is None
     assert t.pipeline.telephony.provider is None
+
+
+def test_validate_credentials_raises_when_mode_s2s_without_realtime() -> None:
+    from src.config_tenant import TenantPipelineConfig
+    t = TenantSettings(id="t1", slug="t1", name="T1",
+                       pipeline=TenantPipelineConfig(mode="s2s"))
+    with pytest.raises(TenantConfigError, match="pipeline.realtime"):
+        validate_credentials(t)
+
+
+def test_validate_credentials_raises_when_realtime_provider_lacks_key() -> None:
+    from src.config_tenant import TenantPipelineConfig, TenantRealtimeConfig
+    t = TenantSettings(id="t1", slug="t1", name="T1",
+                       pipeline=TenantPipelineConfig(
+                           realtime=TenantRealtimeConfig(provider="gemini_live")))
+    with pytest.raises(TenantConfigError, match="pipeline.realtime.api_key_env"):
+        validate_credentials(t)
+
+
+def test_validate_credentials_passes_s2s_with_realtime() -> None:
+    from src.config_tenant import TenantPipelineConfig, TenantRealtimeConfig
+    t = TenantSettings(id="t1", slug="t1", name="T1",
+                       pipeline=TenantPipelineConfig(
+                           mode="s2s",
+                           realtime=TenantRealtimeConfig(provider="gemini_live", api_key_env="GK")))
+    validate_credentials(t)
