@@ -159,3 +159,30 @@ async def test_consume_events_commits_turn_and_slots():
     assert b._last_action == "send_info"
     assert sess.tool_responses and sess.tool_responses[0][1] == "record_turn_signal"
     assert agent.state.state is State.LISTENING
+
+
+def test_bootstrap_builds_s2s_telephony_bridge():
+    """The bootstrap factory helper returns a TelephonyLiveBridge wired for the
+    provider's encoding/sid when the tenant is in s2s mode."""
+    from types import SimpleNamespace
+
+    from src.bootstrap import _build_s2s_telephony_bridge
+
+    rt = SimpleNamespace(model="gemini-3.1-flash-live-preview", voice="Aoede",
+                         language_code="hi-IN", api_key_env="K")
+    tenant = SimpleNamespace(
+        id="t1", slug="dev",
+        settings=SimpleNamespace(pipeline=SimpleNamespace(mode="s2s", realtime=rt),
+                                 timezone="Asia/Kolkata"),
+        secret=lambda env: "fake-key")
+    providers = SimpleNamespace(get_stt=lambda t: None, get_llm=lambda t: object(),
+                                get_tts=lambda t: None)
+
+    bridge = _build_s2s_telephony_bridge(
+        providers, tenant, VoiceBotScript(agent_name="A", agent_role="s", company_name="X"),
+        SlotSchema(), websocket=object(), session_store=None,
+        encoding="mulaw", sid_field="streamSid", supports_clear=True)
+    assert isinstance(bridge, TelephonyLiveBridge)
+    assert bridge._encoding == "mulaw" and bridge._sid_field == "streamSid"
+    assert bridge._config.model == "gemini-3.1-flash-live-preview"
+    assert "record_turn_signal" in bridge._config.tools[0].name
