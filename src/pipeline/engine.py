@@ -278,7 +278,9 @@ class PipelineEngine:
 
         messages = list(history) + [LLMMessage(role="user", content=user_text)]
 
-        detector = SentenceDetector()
+        # first_chunk_soft: let the FIRST sentence break on a clause boundary so
+        # TTS (and thus first audio) starts sooner; later sentences stay normal.
+        detector = SentenceDetector(first_chunk_soft=True)
         full_text_parts: list[str] = []
         sentences_spoken: list[str] = []
         bytes_sent = 0

@@ -73,3 +73,47 @@ def test_closing_quote_attaches_to_sentence() -> None:
     d = SentenceDetector()
     out = d.feed('She said "Namaste." Then she left.')
     assert any('Namaste.' in s for s in out)
+
+
+# --- first_chunk_soft mode (latency: shorter first chunk) --------------------
+
+def test_first_chunk_breaks_on_comma() -> None:
+    d = SentenceDetector(first_chunk_soft=True)
+    out = d.feed("देखिए राजू जी, हमारा ऐप official है।")
+    # First chunk breaks at the comma (soft boundary); the rest on the danda.
+    assert out == ["देखिए राजू जी,", "हमारा ऐप official है।"]
+
+
+def test_first_chunk_min_prevents_tiny_fragment() -> None:
+    d = SentenceDetector(first_chunk_soft=True)
+    out = d.feed("जी, हमारा ऐप बहुत अच्छा है।")
+    # "जी," is below the soft-break floor, so it glues forward instead of being
+    # spoken alone; the whole sentence emits on the danda.
+    assert out == ["जी, हमारा ऐप बहुत अच्छा है।"]
+
+
+def test_first_chunk_max_flush_at_word_boundary() -> None:
+    d = SentenceDetector(first_chunk_soft=True)
+    text = "this is a fairly long opening clause with no end"
+    out = d.feed(text)
+    # No punctuation within the cap -> flush at the last word boundary <= max,
+    # never mid-word.
+    assert out == ["this is a fairly long opening clause"]
+    assert len(out[0]) <= 40
+    assert text.startswith(out[0])
+
+
+def test_only_first_chunk_is_soft() -> None:
+    d = SentenceDetector(first_chunk_soft=True)
+    first = d.feed("देखिए राजू जी, ")
+    assert first == ["देखिए राजू जी,"]
+    # After the first emission, a later comma must NOT trigger a break.
+    assert d.feed("और एक बात, सुनिए ") == []
+    assert d.feed("ठीक है।") == ["और एक बात, सुनिए ठीक है।"]
+
+
+def test_default_unchanged_ignores_commas() -> None:
+    # Flag off (default) — commas never break; only terminators do.
+    d = SentenceDetector()
+    out = d.feed("देखिए राजू जी, हमारा ऐप official है।")
+    assert out == ["देखिए राजू जी, हमारा ऐप official है।"]
