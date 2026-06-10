@@ -37,6 +37,10 @@ BROWSER_SAMPLE_RATE = 16000
 # Chunk size for outbound PCM frames (bytes). 8 KB ~= 256 ms @16 kHz PCM16.
 _SEND_CHUNK = 8192
 
+# Barge-in: required sustained recognized-speech (ms) while the agent is audible
+# before we treat it as an interruption (vs a one-word "haan/hmm" backchannel).
+BARGE_SUSTAIN_MS = 450
+
 # Streaming-STT resilience: if Deepgram drops the socket mid-call, reopen it
 # rather than wedging the turn loop. Backoff + cap guard against a tight spin
 # when the upstream is persistently unavailable.
@@ -463,6 +467,26 @@ class BrowserVoiceBridge:
         # until the cancelled reply's original end time.
         self._play_until = 0.0
         log.info("barge-in: cancelling current turn")
+
+    def _barge_on_interim(self) -> bool:
+        """Per-interim barge detector. True iff the user's speech has sustained
+        past BARGE_SUSTAIN_MS while the agent is audible. Resets its timer when
+        barge is off / no turn yet / the agent isn't audible."""
+        if not (self._barge_enabled and self._had_turn):
+            self._barge_start_t = None
+            return False
+        now = time.monotonic()
+        audible = self._agent_busy or now < self._play_until
+        if not audible:
+            self._barge_start_t = None
+            return False
+        if self._barge_start_t is None:
+            self._barge_start_t = now
+            return False
+        if now - self._barge_start_t >= BARGE_SUSTAIN_MS / 1000:
+            self._barge_start_t = None
+            return True
+        return False
 
     async def _emit_outcome(self) -> None:
         """Analyze the finished call and push the outcome to the browser. Idempotent."""

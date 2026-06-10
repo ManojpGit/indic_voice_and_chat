@@ -342,3 +342,54 @@ async def test_barge_guard_noop_when_agent_silent(monkeypatch):
     bridge._cancel_event = asyncio.Event()
     bridge._handle_barge_in()
     assert not bridge._cancel_event.is_set()
+
+
+@pytest.fixture
+def _clock(monkeypatch):
+    import src.api.browser_bridge as bb
+    t = {"now": 1000.0}
+    monkeypatch.setattr(bb.time, "monotonic", lambda: t["now"])
+    monkeypatch.setattr(bb, "BARGE_SUSTAIN_MS", 450)
+    return t
+
+
+def _armed_bridge():
+    bridge, _ = _bridge([])
+    bridge._barge_enabled = True
+    bridge._had_turn = True
+    bridge._agent_busy = True       # agent audible
+    return bridge
+
+
+def test_barge_on_interim_fires_when_sustained(_clock):
+    bridge = _armed_bridge()
+    assert bridge._barge_on_interim() is False          # first interim -> start timer
+    _clock["now"] += 0.5                                 # 500ms > 450ms threshold
+    assert bridge._barge_on_interim() is True            # sustained -> fire
+    assert bridge._barge_start_t is None                 # reset so it can't re-fire
+
+
+def test_barge_on_interim_no_fire_for_short_backchannel(_clock):
+    bridge = _armed_bridge()
+    assert bridge._barge_on_interim() is False
+    _clock["now"] += 0.2                                 # 200ms < 450ms
+    assert bridge._barge_on_interim() is False
+
+
+def test_barge_on_interim_no_fire_when_not_audible(_clock):
+    bridge = _armed_bridge()
+    bridge._agent_busy = False
+    bridge._play_until = 0.0                              # agent NOT audible
+    assert bridge._barge_on_interim() is False
+    _clock["now"] += 1.0
+    assert bridge._barge_on_interim() is False
+    assert bridge._barge_start_t is None
+
+
+def test_barge_on_interim_disabled_or_no_turn(_clock):
+    bridge = _armed_bridge()
+    bridge._barge_enabled = False
+    assert bridge._barge_on_interim() is False
+    bridge._barge_enabled = True
+    bridge._had_turn = False
+    assert bridge._barge_on_interim() is False
