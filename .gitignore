@@ -43,3 +43,6 @@ logs/
 
 # Local Claude Code settings (never commit)
 .claude/
+
+# Local scratch dir (e.g. source recordings like tmp/breath.mp4)
+tmp/
