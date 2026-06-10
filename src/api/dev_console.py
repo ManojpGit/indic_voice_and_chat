@@ -21,11 +21,14 @@ from src.agents.base import AgentSession
 from src.agents.state_machine import AgentStateMachine
 from src.agents.voicebot import VoiceBotAgent
 from src.api.browser_bridge import BrowserBridgeConfig, BrowserVoiceBridge
+from src.api.gemini_live_bridge import RECORD_TURN_SIGNAL, GeminiLiveBridge
 from src.auth.context import TenantContext
 from src.auth.registry import TenantProviders
 from src.bootstrap import DEFAULT_DEMO_SCRIPT
-from src.dialogue.prompts import VoiceBotScript
+from src.dialogue.prompts import VoiceBotScript, build_s2s_system_instruction
 from src.dialogue.slots import SlotSchema
+from src.interfaces.realtime import RealtimeConfig
+from src.providers.realtime.gemini_live import GeminiLiveSession
 from src.interfaces.llm import LLMConfig
 from src.interfaces.stt import STTConfig
 from src.interfaces.tts import TTSConfig
@@ -53,6 +56,16 @@ def dev_console_enabled() -> bool:
 def set_browser_bridge_factory(factory: Optional[BrowserBridgeFactory]) -> None:
     global _browser_bridge_factory
     _browser_bridge_factory = factory
+
+
+# Factory: (websocket, tenant) -> GeminiLiveBridge (the S2S path). Set during lifespan.
+LiveBridgeFactory = Callable[[WebSocket, TenantContext], GeminiLiveBridge]
+_live_bridge_factory: Optional[LiveBridgeFactory] = None
+
+
+def set_live_bridge_factory(factory: Optional[LiveBridgeFactory]) -> None:
+    global _live_bridge_factory
+    _live_bridge_factory = factory
 
 
 @dev_router.get("/dev/voice")
@@ -84,6 +97,40 @@ async def dev_voice_ws(websocket: WebSocket) -> None:
         log.info("dev console client disconnected", extra={"tenant": tenant.slug})
     except Exception:  # noqa: BLE001
         log.exception("dev console bridge crashed", extra={"tenant": tenant.slug})
+    finally:
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@ws_router.websocket("/voice-live")
+async def dev_voice_live_ws(websocket: WebSocket) -> None:
+    """Speech-to-speech (Gemini Live) path. Same client; different bridge."""
+    from src.auth.middleware import tenant_from_slug
+
+    await websocket.accept()
+    if _live_bridge_factory is None:
+        await websocket.close(code=1011, reason="live bridge factory unset")
+        return
+    try:
+        tenant = await tenant_from_slug(websocket.query_params.get("tenant", "dev"))
+    except Exception as e:  # noqa: BLE001
+        log.warning("dev console (s2s) tenant resolution failed: %s", e)
+        await websocket.close(code=1008, reason="unknown tenant")
+        return
+    try:
+        bridge = _live_bridge_factory(websocket, tenant)
+    except Exception as e:  # noqa: BLE001 - e.g. tenant has no realtime config
+        log.warning("dev console (s2s) bridge build failed: %s", e)
+        await websocket.close(code=1011, reason="s2s not configured for tenant")
+        return
+    try:
+        await bridge.run()
+    except WebSocketDisconnect:
+        log.info("dev console (s2s) client disconnected", extra={"tenant": tenant.slug})
+    except Exception:  # noqa: BLE001
+        log.exception("dev console (s2s) bridge crashed", extra={"tenant": tenant.slug})
     finally:
         try:
             await websocket.close()
@@ -186,5 +233,59 @@ def make_browser_bridge_factory(
             llm=llm,
             tenant_timezone=getattr(tenant.settings, "timezone", "Asia/Kolkata"),
         )
+
+    return factory
+
+
+def make_live_bridge_factory(
+    providers: TenantProviders,
+    script: VoiceBotScript = DEFAULT_DEMO_SCRIPT,
+    slots: SlotSchema = SlotSchema(),
+) -> LiveBridgeFactory:
+    """Build a GeminiLiveBridge (S2S) per connection from pipeline.realtime."""
+
+    def factory(websocket: WebSocket, tenant: TenantContext) -> GeminiLiveBridge:
+        import uuid
+
+        rt = getattr(tenant.settings.pipeline, "realtime", None)
+        if rt is None or not getattr(rt, "provider", None):
+            raise RuntimeError("tenant has no pipeline.realtime config for S2S")
+
+        llm = providers.get_llm(tenant)
+        # The agent is the same; only the bridge differs. The engine is required by
+        # the constructor (the Live path doesn't synthesize via it).
+        engine = PipelineEngine(
+            providers.get_stt(tenant), llm, providers.get_tts(tenant),
+            PipelineConfig(stt=STTConfig(), llm=LLMConfig(), tts=TTSConfig(sample_rate=16000)),
+        )
+        qp = getattr(websocket, "query_params", {}) or {}
+        lead_name = (qp.get("lead_name") or "").strip()
+        lead_data = {"lead_name": lead_name, "name": lead_name} if lead_name else {}
+        session_id = f"live_{uuid.uuid4().hex[:12]}"
+        agent = VoiceBotAgent(
+            session=AgentSession(session_id=session_id, lead_data=lead_data),
+            state_machine=AgentStateMachine(), slot_schema=slots, script=script,
+            engine=engine, store=None,
+        )
+
+        # Voice: ?voice= overrides the config default (validated against allowed_voices).
+        voice = (qp.get("voice") or "").strip() or rt.voice
+        if rt.allowed_voices and voice not in rt.allowed_voices:
+            voice = rt.voice
+        key = tenant.secret(rt.api_key_env) if rt.api_key_env else None
+        config = RealtimeConfig(
+            model=rt.model, voice=voice, language_code=rt.language_code,
+            system_instruction=build_s2s_system_instruction(script, slots, lead_data),
+            tools=[RECORD_TURN_SIGNAL],
+        )
+
+        async def connect(cfg: RealtimeConfig):
+            return await GeminiLiveSession.connect(cfg, api_key=key)
+
+        log.info("dev console built S2S call", extra={
+            "tenant": tenant.slug, "session_id": session_id, "voice": voice, "model": rt.model})
+        return GeminiLiveBridge(
+            websocket=websocket, agent=agent, config=config, connect_session=connect,
+            llm=llm, tenant_timezone=getattr(tenant.settings, "timezone", "Asia/Kolkata"))
 
     return factory

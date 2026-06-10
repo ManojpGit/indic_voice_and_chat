@@ -28,7 +28,9 @@ from src.api.dev_console import (
     dev_console_enabled,
     dev_router,
     make_browser_bridge_factory,
+    make_live_bridge_factory,
     set_browser_bridge_factory,
+    set_live_bridge_factory,
 )
 from src.api.dev_console import (
     ws_router as dev_ws_router,
@@ -132,6 +134,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if dev_console_enabled():
         set_browser_bridge_factory(
             make_browser_bridge_factory(
+                providers=providers, script=campaign.script, slots=campaign.slots,
+            )
+        )
+        set_live_bridge_factory(
+            make_live_bridge_factory(
                 providers=providers, script=campaign.script, slots=campaign.slots,
             )
         )

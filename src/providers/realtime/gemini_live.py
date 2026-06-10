@@ -90,6 +90,9 @@ class GeminiLiveSession(IRealtimeSession):
         await self._session.send_realtime_input(
             audio=types.Blob(data=pcm16, mime_type="audio/pcm;rate=16000"))
 
+    async def send_text(self, text: str) -> None:
+        await self._session.send_realtime_input(text=text)
+
     async def events(self) -> AsyncIterator[RealtimeEvent]:
         async for msg in self._session.receive():
             sc = getattr(msg, "server_content", None)

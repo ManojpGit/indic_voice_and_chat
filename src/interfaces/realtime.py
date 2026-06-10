@@ -61,6 +61,10 @@ class IRealtimeSession(ABC):
         """Feed one chunk of caller PCM16-LE mono @16kHz to the model."""
 
     @abstractmethod
+    async def send_text(self, text: str) -> None:
+        """Send a text turn (e.g. a kickoff to make the agent greet first)."""
+
+    @abstractmethod
     def events(self) -> AsyncIterator[RealtimeEvent]:
         """Yield model events until the session closes."""
 
