@@ -413,3 +413,38 @@ async def test_agent_busy_reset_when_turn_raises():
     with pytest.raises(RuntimeError, match="turn blew up"):
         await bridge._dispatch_text_turn("hi")
     assert bridge._agent_busy is False  # not wedged
+
+
+@pytest.mark.asyncio
+async def test_consumer_barges_on_sustained_interim(monkeypatch):
+    import src.api.browser_bridge as bb
+    monkeypatch.setattr(bb, "BARGE_SUSTAIN_MS", 0)   # any 2nd interim while audible fires
+    bridge, session = _bridge([
+        STTStreamEvent(type="interim", text="ru"),
+        STTStreamEvent(type="interim", text="ruko"),
+    ])
+    bridge._barge_enabled = True
+    bridge._had_turn = True
+    bridge._agent_busy = True                          # a turn is "in flight"
+    bridge._cancel_event = asyncio.Event()
+    bridge._play_until = 0.0
+    await bridge._consume_stream_events(session)
+    assert bridge._cancel_event.is_set()               # barge cancelled the turn
+    interrupts = [m for m in bridge._ws.sent_json if m.get("type") == "interrupt"]
+    assert interrupts                                  # client told to stop playback
+
+
+@pytest.mark.asyncio
+async def test_consumer_no_barge_when_disabled(monkeypatch):
+    import src.api.browser_bridge as bb
+    monkeypatch.setattr(bb, "BARGE_SUSTAIN_MS", 0)
+    bridge, session = _bridge([
+        STTStreamEvent(type="interim", text="ru"),
+        STTStreamEvent(type="interim", text="ruko"),
+    ])
+    bridge._barge_enabled = False                      # off
+    bridge._had_turn = True
+    bridge._agent_busy = True
+    bridge._cancel_event = asyncio.Event()
+    await bridge._consume_stream_events(session)
+    assert not bridge._cancel_event.is_set()

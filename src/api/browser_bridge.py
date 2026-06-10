@@ -371,6 +371,9 @@ class BrowserVoiceBridge:
                     await self._send_json(
                         {"type": "partial", "role": "user", "text": ev.text}
                     )
+                    if self._barge_on_interim():
+                        self._handle_barge_in()
+                        await self._send_json({"type": "interrupt"})
                 elif ev.type == "endpoint":
                     if self._agent_busy or not ev.text.strip():
                         last_interim_t = None
