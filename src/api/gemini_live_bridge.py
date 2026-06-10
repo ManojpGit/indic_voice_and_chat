@@ -27,7 +27,6 @@ log = logging.getLogger(__name__)
 
 _SEND_CHUNK = 8192
 _OUT_RATE = 16000   # browser plays PCM16 @16k
-_KICKOFF = "(The call just connected and the lead has answered. Greet them now with your opening line.)"
 
 RECORD_TURN_SIGNAL = RealtimeTool(
     name="record_turn_signal",
@@ -94,7 +93,11 @@ class GeminiLiveBridge:
             await self._read_hello()
             self._session = await self._connect_session(self._config)
             events_task = asyncio.create_task(self._consume_events())
-            await self._session.send_text(_KICKOFF)   # agent greets first
+            # NOTE: no text kickoff. Sending a text/content turn before the audio
+            # stream disrupts Gemini Live's automatic VAD, so subsequent caller
+            # audio never endpoints. The user speaks first; the model leads its
+            # first reply with the persona's greeting. Agent-greets-first (for
+            # outbound) is a fast-follow needing a VAD-compatible trigger.
             await self._send_json({"type": "status", "status": "listening"})
 
             while not self._stopped:

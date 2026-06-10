@@ -91,7 +91,13 @@ class GeminiLiveSession(IRealtimeSession):
             audio=types.Blob(data=pcm16, mime_type="audio/pcm;rate=16000"))
 
     async def send_text(self, text: str) -> None:
-        await self._session.send_realtime_input(text=text)
+        # Turn-based content (NOT realtime input): mixing send_realtime_input(text)
+        # with the audio stream disrupts automatic VAD so subsequent caller audio
+        # never endpoints. send_client_content keeps the realtime audio path clean.
+        from google.genai import types
+        await self._session.send_client_content(
+            turns=types.Content(role="user", parts=[types.Part(text=text)]),
+            turn_complete=True)
 
     async def events(self) -> AsyncIterator[RealtimeEvent]:
         async for msg in self._session.receive():
