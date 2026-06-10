@@ -48,9 +48,17 @@ def test_voicebot_prompt_includes_all_sections() -> None:
     assert "Manoj" in prompt
     assert "* lead_name" in prompt
     assert "* interest_level" in prompt
-    # JSON schema embedded
-    assert '"response_text"' in prompt
-    assert '"updated_slots"' in prompt
+    # Terse field spec (not the full JSON Schema dump) — field names + enums present.
+    assert "response_text" in prompt
+    assert "updated_slots" in prompt
+    # All enum values must survive the trim.
+    for a in ("continue", "clarify", "transfer", "schedule_callback", "send_info",
+              "close_positive", "close_negative", "end"):
+        assert a in prompt
+    for p in ("opening", "pitch", "qualification", "objection", "closing"):
+        assert p in prompt
+    for s in ("positive", "neutral", "negative", "frustrated"):
+        assert s in prompt
 
 
 def test_voicebot_prompt_mentions_required_slots_with_marker() -> None:

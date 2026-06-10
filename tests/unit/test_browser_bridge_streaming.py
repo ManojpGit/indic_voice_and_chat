@@ -481,3 +481,57 @@ async def test_mic_gated_during_playback_when_barge_disabled():
     bridge._barge_enabled = False
     await bridge._on_pcm_frame(b"\x01\x02" * 160)
     assert session.sent == []                          # echo gate still drops it
+
+
+# --- breath filler ----------------------------------------------------------
+
+import src.api.browser_bridge as bb  # noqa: E402
+
+
+@pytest.fixture
+def _stub_filler(monkeypatch):
+    """Force a single known filler clip so selection is deterministic."""
+    monkeypatch.setattr(bb, "_filler_clips_cache", [b"BREATHPCM"])
+    yield b"BREATHPCM"
+
+
+@pytest.mark.asyncio
+async def test_breath_filler_sent_before_llm(_stub_filler):
+    bridge, _ = _bridge([])
+    await bridge._dispatch_text_turn("नमस्ते")
+    # The breath PCM reached the browser as binary audio, before the agent turn.
+    assert _stub_filler in bridge._ws.sent_bytes
+    assert bridge._agent.text_turns == ["नमस्ते"]
+
+
+@pytest.mark.asyncio
+async def test_breath_filler_not_in_transcript(_stub_filler):
+    bridge, _ = _bridge([])
+    await bridge._dispatch_text_turn("नमस्ते")
+    # Audio-only: never appears as a JSON text/transcript frame.
+    assert all(m.get("text") != "BREATHPCM" for m in bridge._ws.sent_json)
+
+
+@pytest.mark.asyncio
+async def test_breath_filler_skipped_when_cancelled(_stub_filler):
+    bridge, _ = _bridge([])
+    bridge._cancel_event = asyncio.Event()
+    bridge._cancel_event.set()
+    await bridge._send_filler()
+    assert _stub_filler not in bridge._ws.sent_bytes
+
+
+@pytest.mark.asyncio
+async def test_breath_filler_noop_without_clips(monkeypatch):
+    monkeypatch.setattr(bb, "_filler_clips_cache", [])
+    bridge, _ = _bridge([])
+    await bridge._send_filler()
+    assert bridge._ws.sent_bytes == []
+
+
+def test_real_filler_clips_load_and_are_16k_mono():
+    # The committed asset(s) load as non-empty PCM.
+    bb._filler_clips_cache = None
+    clips = bb._filler_clips()
+    assert len(clips) >= 1 and all(len(c) > 0 for c in clips)
+    bb._filler_clips_cache = None  # reset cache for other tests

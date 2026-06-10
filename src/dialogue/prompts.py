@@ -183,26 +183,22 @@ def build_voicebot_system_prompt(
     # cannot pronounce Latin script, so response_text MUST be in the native
     # script — romanized/English text comes out garbled ("drunk").
     parts.append(
-        f"Speak in {script.language_default}. CRITICAL: write `response_text` ONLY in the "
-        "native script of that language (Devanagari for Hindi) — NEVER in romanized/Latin "
-        "letters or English sentences. Your reply is spoken aloud by a Hindi text-to-speech "
-        "voice that mispronounces Latin script. So even if the user speaks in English or "
-        "types Hinglish in Latin letters, you reply in natural, warm Hindi written in "
-        "Devanagari. Match their level of formality. (Well-known brand names may stay as-is.)"
+        f"Speak in {script.language_default}. Write `response_text` ONLY in the native "
+        "script (Devanagari for Hindi) — never romanized/Latin. It is read aloud by a Hindi "
+        "TTS that garbles Latin script, so reply in warm natural Hindi even when the user "
+        "writes English/Hinglish. Match their formality. (Well-known brand names may stay as-is.)"
     )
 
     # Customer-led behavior (fixed policy, generic over every campaign).
     parts.append(
-        "How to handle every turn — this is your core behavior:\n"
-        "1. LISTEN FIRST. Work out what the customer actually said, then answer THAT "
-        "directly and helpfully before anything else. Draw on the knowledge below, in "
-        "your own warm words — never recite.\n"
-        "2. THEN gently move toward your objective. The talking points are material to "
-        "draw on, not a checklist to read out.\n"
-        "3. REDIRECT ONLY WHEN the customer's input is totally unrelated to this call "
-        "(e.g. weather, wrong number, personal chit-chat): briefly and warmly acknowledge, "
-        "then steer back. If their question is on-topic or a concern, answer it — never deflect.\n"
-        "4. Follow the do's and don'ts below for tone."
+        "Core behavior every turn:\n"
+        "1. LISTEN FIRST: answer what the customer actually said, directly and helpfully, in "
+        "your own warm words (draw on the knowledge below — never recite).\n"
+        "2. THEN gently move toward your objective; talking points are material, not a checklist.\n"
+        "3. REDIRECT ONLY WHEN the input is unrelated to this call (weather, wrong number, "
+        "chit-chat): briefly acknowledge, then steer back. On-topic questions/concerns: answer, "
+        "never deflect.\n"
+        "4. Follow the do's and don'ts for tone."
     )
 
     if script.objective:
@@ -263,19 +259,31 @@ def build_voicebot_system_prompt(
         )
 
     if lead_data:
-        parts.append("Known lead data:\n" + json.dumps(lead_data, ensure_ascii=False, indent=2))
+        parts.append("Known lead data: " + json.dumps(lead_data, ensure_ascii=False))
 
+    # Terse field spec instead of dumping the full JSON Schema (~50 lines) — keeps
+    # every field name, the required set, and all enum values, at a fraction of the
+    # tokens, to lower LLM TTFT. The VOICEBOT_RESPONSE_SCHEMA constant is unchanged.
     parts.append(
-        "On every turn you MUST respond with a single JSON object matching this schema:\n"
-        + json.dumps(VOICEBOT_RESPONSE_SCHEMA, indent=2)
+        "Respond with ONE JSON object. Fields:\n"
+        "- response_text (string, required): what you say, spoken aloud\n"
+        "- language (string, required)\n"
+        "- action (required): one of continue|clarify|transfer|schedule_callback|"
+        "send_info|close_positive|close_negative|end\n"
+        "- conversation_phase: one of opening|pitch|qualification|objection|closing\n"
+        "- sentiment: one of positive|neutral|negative|frustrated\n"
+        "- updated_slots (object), action_reason (string), internal_notes (string)"
     )
 
     parts.append(
         "Rules:\n"
-        "- Keep `response_text` concise (1-2 sentences) — this is voice, not chat.\n"
-        "- Never invent facts about the company or its products.\n"
-        "- If the user asks if you are AI, answer honestly.\n"
-        "- If the user asks to be removed, set action=close_negative and acknowledge.\n"
+        "- Keep `response_text` concise (1-2 sentences) — this is voice.\n"
+        "- Don't repeat a CTA you've already made: if you've already offered the "
+        "link/bonus/next step, don't pitch it again unless the user brings it up — answer "
+        "and vary your follow-up, or stop. Repetition sounds robotic.\n"
+        "- Never invent facts about the company or products.\n"
+        "- If asked whether you are AI, answer honestly.\n"
+        "- If asked to be removed, set action=close_negative and acknowledge.\n"
         "- Callback: do NOT set action=schedule_callback until you have a SPECIFIC "
         "day and time. If the user is vague ('kal', 'baad mein', 'later'), keep "
         "action=continue, ask for the exact time (e.g. 'Kal kis samay call karoon?'), "
