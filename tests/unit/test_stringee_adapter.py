@@ -89,8 +89,11 @@ async def test_initiate_call_body_shape(adapter_with_token: StringeeAdapter) -> 
     )
     await adapter_with_token.initiate_call(cfg)
     body = json.loads(route.calls.last.request.content.decode())
-    assert body["from"]["number"] == "+918888"
-    assert body["to"][0]["number"] == "+919999"
+    # Stringee requires BARE digits — the leading '+' must be stripped (else
+    # r:10 FROM/TO_NUMBER_INVALID_FORMAT). Both number and alias.
+    assert body["from"]["number"] == "918888"
+    assert body["from"]["alias"] == "918888"
+    assert body["to"][0]["number"] == "919999"
     assert body["answer_url"] == "https://x/answer"
 
 

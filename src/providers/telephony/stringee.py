@@ -41,6 +41,13 @@ from src.interfaces.telephony import (
 
 STRINGEE_BASE_URL = "https://api.stringee.com"
 
+
+def _bare_number(number: str) -> str:
+    """Stringee requires bare digits — no leading '+' (E.164 with '+' is rejected
+    as r:10 FROM/TO_NUMBER_INVALID_FORMAT). Strip a leading '+' and surrounding
+    whitespace so callers/config may keep the '+E.164' form."""
+    return (number or "").strip().lstrip("+")
+
 # Stringee call event → our vocabulary.
 _STATUS_MAP = {
     "STARTING":  "ringing",
@@ -115,12 +122,17 @@ class StringeeAdapter(ITelephonyProvider):
         returns an SCC (Stringee Call Control) script when the destination
         picks up — equivalent to TwiML.
         """
+        # Stringee rejects E.164 with a leading '+' (r:10 FROM/TO_NUMBER_INVALID_
+        # FORMAT) — numbers must be BARE digits (e.g. 918204268005). Normalize
+        # here so callers/config can keep the '+E.164' form.
+        from_number = _bare_number(config.from_number)
+        to_number = _bare_number(config.to_number)
         # NOTE: do NOT send ``actions`` (not even an empty list) alongside
         # ``answer_url`` — Stringee treats a present ``actions`` as the SCCO and
         # never GETs the answer_url, so the IVR is never invoked.
         body: dict[str, Any] = {
-            "from": {"type": "external", "number": config.from_number, "alias": config.from_number},
-            "to": [{"type": "external", "number": config.to_number, "alias": config.to_number}],
+            "from": {"type": "external", "number": from_number, "alias": from_number},
+            "to": [{"type": "external", "number": to_number, "alias": to_number}],
             "answer_url": config.webhook_url,
         }
         async with httpx.AsyncClient(timeout=self._timeout) as client:
