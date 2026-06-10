@@ -18,6 +18,7 @@
 | 3 | Adopt Deepgram streaming STT (replacing batch Groq)? | **Yes — keep streaming on for the dev console**, `endpointing=300ms`, model `nova-2 hi`. | Better Hinglish transcription, rock-solid reliability, ~0.7s off the pre-response gap, live partials. |
 | 4 | Where is the remaining latency bottleneck? | **The LLM (and TTS) inference**, not STT or server placement. | Consistent across all three experiments: in-turn time ≈ unchanged regardless of STT/host. |
 | 5 | Can prompt-trim / TTS-timing / perceptual fillers cut first-word latency? | **No — the floor is model-bound.** Kept the trims (harmless/cheaper) + a subtle breath cue. Sliding-window context fixes long-call growth; endpointing 200→400ms fixes turn-taking. | First-word ~3.2s / TTFT ~2.1s unmoved across the levers; a sub-second filler can't mask a ~3s gap. |
+| 6 | Can speech-to-speech (Gemini Live) break the model-bound floor? | **Yes — the only thing that does.** ~1.4s first-word + natural Hinglish. Shipped as a selectable dev-console path (PR #19); the cascade stays the default. | An end-to-end audio model removes the STT→LLM→TTS serialization *and* our JSON/sentence gates — the thing that *is* the latency. |
 
 ---
 
@@ -227,3 +228,31 @@ The in-turn numbers (~2.5s first-audio, ~4.7s total) are **essentially identical
 - **Endpointing 200 → 400ms** — Deepgram finalized speech after only 200ms of trailing silence, so natural mid-sentence pauses produced premature `endpoint`s and the agent replied to fragments while the user was still talking ("agent interrupted me"). 400ms waits out short pauses; trade is ~+200ms reaction time for no interruptions. (Supersedes the `endpointing=300` in decision #3.)
 
 **Decision & rationale:** **Latency is model-bound — confirmed a fourth time.** Prompt size, TTS-start timing, and perceptual masking do not move the ~3.2s first-word floor; it is LLM inference time. The genuine remaining levers are all quality/cost trades, not tuning: a **faster LLM** (flash-lite rejected for quality in pre-session work), a **streaming/faster TTS** (Exp-4: only helps with sub-sentence synthesis = prosody risk), or the **Mumbai deploy** (~400ms TTS network, deferred). The shipped value of this pass is the **dialogue-quality + robustness** work (CTA de-repetition, sliding-window context, turn-taking), not a latency reduction.
+
+---
+
+## Experiment 6 — Speech-to-speech (Gemini Live) — the floor-breaker (2026-06-10)
+
+**Goal:** Exp 1–5 concluded the ~3.2s first-word latency is **model-bound** — the serialized STT→LLM→TTS cascade (plus our JSON-envelope + full-sentence gates) *is* the latency, and no tuning moves it. The only architecture that removes the cascade is **end-to-end speech-to-speech** (audio in → audio out). Does it actually deliver, for a Hindi agent, without losing our control/quality?
+
+**Spike** (`spikes/gemini_live_spike.py`, file-driven, real Hindi/Hinglish utterances → a Gemini Live session with the campaign persona + a prebuilt voice + a `record_turn_signal` tool):
+
+| Model | first-word (median, real-time input) | vs cascade (~3200ms) |
+|---|---|---|
+| `gemini-2.5-flash-native-audio` | 2204 ms | ~1s faster |
+| **`gemini-3.1-flash-live-preview`** | **1389 ms** | **~1.8s faster, sub-1.5s** |
+
+**Findings:**
+- **Latency: solved.** ~1.4s first-word (vs 3.2s), and it's end-to-end S2S so it brings **native barge-in/turn-taking** for free. Co-location would lower it further.
+- **Quality: excellent** — natural Hinglish code-switching in persona ("अरे, बिलकुल सेफ है! Bharat Matka ट्रस्टेड ऐप है…"), *better* than the cascade's forced-Devanagari output. User auditioned Aoede/Kore/Leda voices.
+- **Control: feasible** — a `record_turn_signal` function-call carries `action` + `updated_slots` alongside the audio, so the dialogue control spine (state machine + slots + outcome) is rebuilt on tool-calls, not lost.
+
+**Decision: GO.** Shipped (PR #19) as a **selectable dev-console path** beside the cascade: `pipeline.mode: layered|s2s` + a Mode/Voice selector; `GeminiLiveBridge` speaks the same browser protocol; `apply_signal` (extracted from the cascade) is driven by the tool-call; Live transcriptions feed the same outcome path. Cascade stays the default + fallback. Validated live (multi-turn Hindi conversation): "This looks good."
+
+**Two non-obvious Gemini Live engineering findings (cost hours — end-to-end testing earned its keep):**
+1. **`session.receive()` is a PER-TURN generator** (ends at `turn_complete`). Iterating it once handles only turn 1 — multi-turn appears "stuck". Must loop `receive()` per turn.
+2. **A text kickoff breaks realtime-audio VAD.** Sending text (`send_realtime_input(text)` or `send_client_content`) to auto-greet stops subsequent caller audio from endpointing. So v1: the user speaks first; agent-greets-first needs a VAD-compatible trigger.
+
+**Open (tuning/follow-up, not blockers):** replies run long (~7–12s) despite a strong brevity instruction (barge-in mitigates); agent-greets-first; **telephony S2S** (Twilio/Exotel duplex; Stringee can't); **per-call cost** (realtime audio tokens are much pricier than text — measure before any rollout).
+
+**Bottom line for the report:** five experiments established the latency is the cascade itself; the sixth removed the cascade. S2S is the architectural answer; the cascade remains the cheaper, controllable default.
