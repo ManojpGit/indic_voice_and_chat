@@ -99,6 +99,8 @@ async def test_endpoint_event_dispatches_text_turn():
         STTStreamEvent(type="endpoint", text="और कुछ benefits हैं"),
     ])
     await bridge._consume_stream_events(session)
+    if bridge._turn_task is not None:
+        await bridge._turn_task          # turn now runs as a background task
     assert bridge._agent.text_turns == ["और कुछ benefits हैं"]
     transcripts = [m for m in bridge._ws.sent_json
                    if m.get("type") == "transcript" and m.get("role") == "user"]
@@ -308,6 +310,8 @@ async def test_endpoint_gap_ms_logged(caplog):
     ])
     with caplog.at_level(logging.INFO):
         await bridge._consume_stream_events(session)
+        if bridge._turn_task is not None:
+            await bridge._turn_task          # turn now runs as a background task
     recs = [r for r in caplog.records if r.message == "browser turn (stream)"]
     assert recs, "no 'browser turn (stream)' log emitted"
     gap = getattr(recs[0], "endpoint_gap_ms", None)

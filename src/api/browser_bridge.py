@@ -185,6 +185,8 @@ class BrowserVoiceBridge:
             )
             if stream_task is not None:
                 stream_task.cancel()
+            if self._turn_task is not None and not self._turn_task.done():
+                self._turn_task.cancel()
             if self._stream_session is not None:
                 try:
                     await self._stream_session.aclose()
@@ -374,7 +376,14 @@ class BrowserVoiceBridge:
                         if last_interim_t is not None else None
                     )
                     last_interim_t = None
-                    await self._dispatch_text_turn(ev.text, endpoint_gap_ms=gap_ms)
+                    # Set _agent_busy BEFORE create_task to close the race with a
+                    # second endpoint; run the turn as a task so this loop stays
+                    # free to read interims (and detect a barge) during the reply.
+                    self._agent_busy = True
+                    self._had_turn = True
+                    self._turn_task = asyncio.create_task(
+                        self._dispatch_text_turn(ev.text, endpoint_gap_ms=gap_ms)
+                    )
         except Exception:  # noqa: BLE001 - never let the consumer die silently
             log.exception("stream event consumer crashed")
 
