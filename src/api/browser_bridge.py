@@ -22,7 +22,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.analysis.call_outcome import analyze_call
 from src.interfaces.llm import LLMMessage
@@ -84,6 +84,10 @@ class BrowserVoiceBridge:
         self._stream_session = None
         self._agent_busy = False
         self._cancel_event = None  # set per in-flight streaming turn; barge-in fires it
+        self._barge_enabled = False     # set by the client's {"type":"config","barge":...}
+        self._turn_task = None          # in-flight turn runs as a task so barge can interrupt it
+        self._barge_start_t = None      # monotonic time the current interruption's speech began
+        self._had_turn = False          # opening is not barge-able; arm only after the first turn
         self._llm = llm
         self._tenant_timezone = tenant_timezone
         self._last_action: str | None = None
@@ -158,9 +162,8 @@ class BrowserVoiceBridge:
                         ctrl = json.loads(text)
                     except (ValueError, TypeError):
                         ctrl = {}
-                    if ctrl.get("type") == "barge_in":
-                        self._handle_barge_in()
-                    elif ctrl.get("type") == "end":
+                    self._apply_control(ctrl)
+                    if ctrl.get("type") == "end":
                         # Graceful client-initiated end: deliver the outcome while
                         # the socket is still open, then stop the loop. break (not
                         # continue) so exit_reason isn't overwritten by the while/else.
@@ -436,11 +439,21 @@ class BrowserVoiceBridge:
         await self._send_json({"type": "barge", "armed": False})
         await self._send_json({"type": "status", "status": "listening"})
 
+    def _apply_control(self, ctrl: dict) -> None:
+        """Handle a client control message (called from the run() WS loop)."""
+        if ctrl.get("type") == "config":
+            self._barge_enabled = bool(ctrl.get("barge"))
+        elif ctrl.get("type") == "barge_in":
+            self._handle_barge_in()
+
     def _handle_barge_in(self) -> None:
         """Cancel the in-flight turn so the agent stops mid-utterance. Idempotent;
         no-op when the agent isn't speaking. Transport-agnostic — a future
         server-side (telephony) detector can call this same entry point."""
-        if not self._agent_busy:
+        # Fire whenever the agent is AUDIBLE — generating (_agent_busy) OR its
+        # audio is still playing (now < _play_until). Most interruptions land
+        # during playback, after generation finished and _agent_busy is False.
+        if not (self._agent_busy or time.monotonic() < self._play_until):
             return
         if self._cancel_event is not None:
             self._cancel_event.set()
@@ -467,7 +480,7 @@ class BrowserVoiceBridge:
                 telephony_status=None,
                 final_action=self._last_action,
                 tenant_timezone=self._tenant_timezone,
-                now=datetime.now(timezone.utc),
+                now=datetime.now(UTC),
                 llm=self._llm,
             )
         except Exception:  # noqa: BLE001 - never let analysis break teardown

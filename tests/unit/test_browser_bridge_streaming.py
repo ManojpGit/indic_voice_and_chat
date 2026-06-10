@@ -4,10 +4,11 @@ import asyncio
 import json
 import logging
 import time
+import time as _time
 
 import pytest
 
-from src.api.browser_bridge import BrowserVoiceBridge, BrowserBridgeConfig
+from src.api.browser_bridge import BrowserBridgeConfig, BrowserVoiceBridge
 from src.interfaces.stt import STTStreamEvent
 from src.pipeline.vad import EnergyVAD
 
@@ -209,6 +210,7 @@ async def test_stream_consumer_stops_without_reopen_when_call_ended(monkeypatch)
 
 def test_build_streaming_provider_from_tenant():
     from types import SimpleNamespace
+
     from src.api.dev_console import _build_stream_provider
 
     tenant = SimpleNamespace(
@@ -227,6 +229,7 @@ def test_build_streaming_provider_from_tenant():
 
 def test_build_streaming_provider_none_when_unconfigured():
     from types import SimpleNamespace
+
     from src.api.dev_console import _build_stream_provider
 
     tenant = SimpleNamespace(
@@ -272,7 +275,7 @@ async def test_cancelled_turn_skips_agent_transcript():
                 pipeline = TurnResult("u", "hi", 1.0, "{}", 0, TurnMetrics(), cancelled=True)
             return _O()
 
-    from src.api.browser_bridge import BrowserVoiceBridge, BrowserBridgeConfig
+    from src.api.browser_bridge import BrowserBridgeConfig, BrowserVoiceBridge
     from src.pipeline.vad import EnergyVAD
     bridge = BrowserVoiceBridge(
         websocket=_FakeWS(), agent=_CancelAgent(),
@@ -309,3 +312,33 @@ async def test_endpoint_gap_ms_logged(caplog):
     assert recs, "no 'browser turn (stream)' log emitted"
     gap = getattr(recs[0], "endpoint_gap_ms", None)
     assert gap is not None and gap >= 0
+
+
+@pytest.mark.asyncio
+async def test_config_message_enables_barge():
+    bridge, _ = _bridge([])
+    bridge._apply_control({"type": "config", "barge": True})
+    assert bridge._barge_enabled is True
+    bridge._apply_control({"type": "config", "barge": False})
+    assert bridge._barge_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_barge_guard_fires_during_playback_only(monkeypatch):
+    bridge, _ = _bridge([])
+    bridge._agent_busy = False
+    bridge._cancel_event = asyncio.Event()
+    bridge._play_until = _time.monotonic() + 5
+    bridge._handle_barge_in()
+    assert bridge._cancel_event.is_set()
+    assert bridge._play_until == 0.0
+
+
+@pytest.mark.asyncio
+async def test_barge_guard_noop_when_agent_silent(monkeypatch):
+    bridge, _ = _bridge([])
+    bridge._agent_busy = False
+    bridge._play_until = 0.0
+    bridge._cancel_event = asyncio.Event()
+    bridge._handle_barge_in()
+    assert not bridge._cancel_event.is_set()
