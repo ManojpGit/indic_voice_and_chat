@@ -49,6 +49,14 @@ _END_ACTIONS = {"close_positive", "close_negative", "end"}
 # false-firing on merely-slow turns.
 TURN_TIMEOUT_S = 20.0
 
+# Sliding-window context. The full transcript lives in ``session.turns`` (used for
+# the UI and post-call outcome analysis), but only the system prompt + the last
+# MAX_HISTORY_TURNS exchanges are sent to the LLM each turn. Without this the prompt
+# grows ~2 messages per turn, so per-turn TTFT/latency climbs as a call goes on
+# ("agent takes longer to respond after a while"). Keeping the system prompt
+# preserves persona + lead data; ~6 recent exchanges preserve the active thread.
+MAX_HISTORY_TURNS = 6
+
 
 class VoiceBotAgent(BaseAgent):
     def __init__(
@@ -77,6 +85,17 @@ class VoiceBotAgent(BaseAgent):
     @property
     def system_prompt(self) -> str:
         return self._system_prompt
+
+    def _history_window(self) -> list[LLMMessage]:
+        """Bounded LLM context: the system prompt + the last MAX_HISTORY_TURNS
+        exchanges. ``session.turns`` keeps the full transcript untouched; this
+        only narrows what the engine sends to the LLM, so per-turn latency stays
+        flat as the call grows (see MAX_HISTORY_TURNS). Always returns the system
+        prompt (turns[0]) followed by the most recent messages."""
+        turns = self.session.turns
+        if len(turns) <= 1:
+            return list(turns)
+        return turns[:1] + turns[1:][-(2 * MAX_HISTORY_TURNS):]
 
     async def start(self) -> None:
         """Move from IDLE to LISTENING. Call once when the call connects."""
@@ -143,7 +162,7 @@ class VoiceBotAgent(BaseAgent):
             pipeline_result = await asyncio.wait_for(
                 self._engine.run_turn(
                     captured_audio=captured_audio,
-                    history=self.session.turns,
+                    history=self._history_window(),
                     audio_sink=audio_sink,
                 ),
                 timeout=TURN_TIMEOUT_S,
@@ -254,7 +273,7 @@ class VoiceBotAgent(BaseAgent):
             pipeline_result = await asyncio.wait_for(
                 self._engine.run_turn_text(
                     user_text,
-                    self.session.turns,
+                    self._history_window(),
                     audio_sink,
                     cancel_event,
                 ),

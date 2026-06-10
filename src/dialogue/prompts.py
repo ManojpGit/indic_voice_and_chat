@@ -273,6 +273,10 @@ def build_voicebot_system_prompt(
     parts.append(
         "Rules:\n"
         "- Keep `response_text` concise (1-2 sentences) — this is voice, not chat.\n"
+        "- Don't repeat a call-to-action you've already made. If you've already offered "
+        "the link / bonus / next step in an earlier turn, do NOT pitch it again unless "
+        "the user brings it up — answer what they said and vary your follow-up, or simply "
+        "stop. Repeating the same CTA every turn sounds robotic.\n"
         "- Never invent facts about the company or its products.\n"
         "- If the user asks if you are AI, answer honestly.\n"
         "- If the user asks to be removed, set action=close_negative and acknowledge.\n"

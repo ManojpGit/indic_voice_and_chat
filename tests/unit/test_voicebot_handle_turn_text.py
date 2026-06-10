@@ -34,6 +34,48 @@ def _agent(engine):
 
 
 @pytest.mark.asyncio
+async def test_history_window_bounds_llm_context():
+    """The LLM gets system prompt + last MAX_HISTORY_TURNS exchanges, not the
+    whole transcript — so per-turn latency doesn't grow with call length. The
+    full transcript still lives in session.turns."""
+    from src.agents.voicebot import MAX_HISTORY_TURNS
+    from src.interfaces.llm import LLMMessage
+
+    captured = {}
+
+    class _CaptureEngine:
+        async def run_turn_text(self, user_text, history, audio_sink, cancel_event=None, **kw):
+            captured["history"] = list(history)
+            return TurnResult(
+                user_text=user_text, user_language="hi", user_confidence=1.0,
+                agent_text='{"response_text": "ok", "action": "continue"}',
+                audio_bytes_sent=1, metrics=TurnMetrics(),
+            )
+
+    agent = _agent(_CaptureEngine())
+    await agent.start()
+    # Simulate a long call: system prompt (added in __init__) + 20 prior messages.
+    for i in range(10):
+        agent.session.turns.append(LLMMessage(role="user", content=f"u{i}"))
+        agent.session.turns.append(LLMMessage(role="assistant", content=f"a{i}"))
+
+    async def sink(a):
+        pass
+
+    await agent.handle_turn_text("latest", sink)
+
+    hist = captured["history"]
+    # system prompt + 2*MAX_HISTORY_TURNS recent messages.
+    assert hist[0].role == "system"
+    assert len(hist) == 1 + 2 * MAX_HISTORY_TURNS
+    # Oldest recent message is u4 (turns 0-3 dropped), newest is a9.
+    assert hist[1].content == f"u{10 - MAX_HISTORY_TURNS}"
+    assert hist[-1].content == "a9"
+    # Full transcript is preserved (system + 20 prior + new user + new assistant).
+    assert len(agent.session.turns) == 1 + 20 + 2
+
+
+@pytest.mark.asyncio
 async def test_handle_turn_text_records_and_advances():
     result = TurnResult(
         user_text="और कुछ benefits हैं?",
