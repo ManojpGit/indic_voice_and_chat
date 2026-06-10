@@ -115,6 +115,28 @@ async def test_endpoint_ignored_while_agent_busy():
     assert bridge._agent.text_turns == []
 
 
+@pytest.mark.asyncio
+async def test_endpoint_does_not_dispatch_while_prior_turn_unwinding():
+    # After a barge, _handle_barge_in clears _agent_busy synchronously while the
+    # cancelled turn task is STILL unwinding (parked at an await). A fast endpoint
+    # must NOT slip through and dispatch a second turn over that still-live task.
+    bridge, session = _bridge([STTStreamEvent(type="endpoint", text="और कुछ")])
+    bridge._agent_busy = False  # as a barge would leave it
+    # A still-pending turn task standing in for the unwinding cancelled turn.
+    pending = asyncio.create_task(asyncio.Event().wait())
+    bridge._turn_task = pending
+    try:
+        await bridge._consume_stream_events(session)
+        assert bridge._agent.text_turns == []        # no second turn dispatched
+        assert bridge._turn_task is pending          # task not reassigned
+    finally:
+        pending.cancel()
+        try:
+            await pending
+        except asyncio.CancelledError:
+            pass
+
+
 # --- playback echo gate (fix for "stuck in listening") ------------------
 # While the agent's reply is still playing on the client, mic audio must NOT
 # be streamed to Deepgram, or the agent's own voice (echo) becomes a continuous
@@ -289,17 +311,6 @@ async def test_cancelled_turn_skips_agent_transcript():
     assert agent_msgs == []  # abandoned reply not emitted
     statuses = [m["status"] for m in bridge._ws.sent_json if m.get("type") == "status"]
     assert statuses[-1] == "listening"
-
-
-@pytest.mark.asyncio
-async def test_dispatch_arms_then_disarms_barge():
-    # A normal turn should arm barge-in at the start and disarm at the end, so
-    # the browser only allows interruptions during a cancellable turn.
-    bridge, session = _bridge([])
-    await bridge._dispatch_text_turn("hi")
-    barge = [m for m in bridge._ws.sent_json if m.get("type") == "barge"]
-    assert barge[0] == {"type": "barge", "armed": True}
-    assert barge[-1] == {"type": "barge", "armed": False}
 
 
 @pytest.mark.asyncio

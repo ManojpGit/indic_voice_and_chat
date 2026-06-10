@@ -185,6 +185,10 @@ class BrowserVoiceBridge:
             )
             if stream_task is not None:
                 stream_task.cancel()
+                try:
+                    await stream_task
+                except BaseException:  # noqa: BLE001 - cancellation during teardown
+                    pass
             if self._turn_task is not None and not self._turn_task.done():
                 self._turn_task.cancel()
                 try:
@@ -373,7 +377,13 @@ class BrowserVoiceBridge:
                         self._handle_barge_in()
                         await self._send_json({"type": "interrupt"})
                 elif ev.type == "endpoint":
-                    if self._agent_busy or not ev.text.strip():
+                    # turn_in_flight guards against a still-unwinding cancelled
+                    # (barged) turn — which clears _agent_busy before its task
+                    # finishes — clobbering the new turn's state.
+                    turn_in_flight = (
+                        self._turn_task is not None and not self._turn_task.done()
+                    )
+                    if self._agent_busy or turn_in_flight or not ev.text.strip():
                         last_interim_t = None
                         continue
                     gap_ms = (
@@ -394,15 +404,14 @@ class BrowserVoiceBridge:
 
     async def _dispatch_text_turn(self, text: str, endpoint_gap_ms: int | None = None) -> None:
         """Run one turn from an already-transcribed utterance (streaming path)."""
+        # Everything from _agent_busy=True onward is inside the try so a
+        # cancellation/send-failure parked at any of the pre-turn sends still
+        # resets _agent_busy (else the consumer wedges with _agent_busy stuck True).
         self._agent_busy = True
-        self._cancel_event = asyncio.Event()
-        await self._send_json({"type": "status", "status": "thinking"})
-        # Arm browser barge-in only now that a cancellable turn is in progress
-        # (not during the opening — that lets the agent's greeting play fully and
-        # gives the browser echo-canceller time to converge before the first turn).
-        await self._send_json({"type": "barge", "armed": True})
-        await self._send_json({"type": "partial", "role": "user", "text": ""})
         try:
+            self._cancel_event = asyncio.Event()
+            await self._send_json({"type": "status", "status": "thinking"})
+            await self._send_json({"type": "partial", "role": "user", "text": ""})
             outcome = await self._agent.handle_turn_text(
                 text, self._send_pcm, cancel_event=self._cancel_event
             )
@@ -418,7 +427,6 @@ class BrowserVoiceBridge:
         if outcome.pipeline.cancelled:
             await self._emit_state()
             self._agent_busy = False
-            await self._send_json({"type": "barge", "armed": False})
             await self._send_json({"type": "status", "status": "listening"})
             return
 
@@ -457,7 +465,6 @@ class BrowserVoiceBridge:
                 await asyncio.sleep(remaining + 0.5)
             return
         self._agent_busy = False
-        await self._send_json({"type": "barge", "armed": False})
         await self._send_json({"type": "status", "status": "listening"})
 
     def _apply_control(self, ctrl: dict) -> None:
@@ -465,6 +472,9 @@ class BrowserVoiceBridge:
         if ctrl.get("type") == "config":
             self._barge_enabled = bool(ctrl.get("barge"))
         elif ctrl.get("type") == "barge_in":
+            # Retained transport-agnostic entry point: a future server-side/
+            # telephony detector can request a barge via this control message
+            # (the dev console now detects server-side, not via this message).
             self._handle_barge_in()
 
     def _handle_barge_in(self) -> None:
