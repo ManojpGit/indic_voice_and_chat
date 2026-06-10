@@ -84,6 +84,7 @@ class _BaseLiveBridge:
                     pass
             if self._session is not None:
                 await self._session.aclose()
+            await self._on_teardown()
             await self._emit_outcome()
             await self._agent.handle_hangup()
 
@@ -185,6 +186,9 @@ class _BaseLiveBridge:
 
     async def _on_start(self) -> None:
         """Optional: pre-session transport handshake (e.g. read the browser hello)."""
+
+    async def _on_teardown(self) -> None:
+        """Optional: stop any transport-side tasks (e.g. the telephony sender)."""
 
     async def _emit_status(self, status: str) -> None:
         """Optional: surface a status to the transport (browser UI)."""
