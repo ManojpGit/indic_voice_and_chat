@@ -85,6 +85,14 @@ class _BaseLiveBridge:
             if self._session is not None:
                 await self._session.aclose()
             await self._on_teardown()
+            # Salvage an in-progress turn (call ended mid-reply) so the transcript
+            # + outcome aren't lost.
+            try:
+                if ((self._user_buf.strip() or self._agent_buf.strip())
+                        and not getattr(self._agent.state, "is_terminal", False)):
+                    await self._commit_turn()
+            except Exception:  # noqa: BLE001 - never let salvage break teardown
+                log.exception("turn salvage on teardown failed")
             await self._emit_outcome()
             await self._agent.handle_hangup()
 

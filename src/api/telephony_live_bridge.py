@@ -69,20 +69,26 @@ class TelephonyLiveBridge(_BaseLiveBridge):
                 pass
 
     async def _inbound_loop(self) -> None:
-        while not self._stopped:
-            raw = await self._ws.receive_text()
-            msg = json.loads(raw)
-            event = msg.get("event")
-            if event == "connected":
-                continue
-            if event == "start":
-                start = msg.get("start", {}) or {}
-                self._stream_sid = start.get(self._sid_field) or msg.get(self._sid_field)
-                log.info("telephony stream started", extra={"sid": self._stream_sid})
-            elif event == "media":
-                await self._on_media(msg.get("media") or {})
-            elif event == "stop":
-                break
+        from starlette.websockets import WebSocketDisconnect
+        try:
+            while not self._stopped:
+                raw = await self._ws.receive_text()
+                msg = json.loads(raw)
+                event = msg.get("event")
+                if event == "connected":
+                    continue
+                if event == "start":
+                    start = msg.get("start", {}) or {}
+                    self._stream_sid = start.get(self._sid_field) or msg.get(self._sid_field)
+                    log.info("telephony stream started", extra={"sid": self._stream_sid})
+                elif event == "media":
+                    await self._on_media(msg.get("media") or {})
+                elif event == "stop":
+                    break
+        except WebSocketDisconnect:
+            pass  # caller hung up — normal end
+        finally:
+            self._stopped = True
 
     async def _on_media(self, media: dict) -> None:
         if media.get("track") not in (None, "inbound"):
@@ -133,6 +139,5 @@ class TelephonyLiveBridge(_BaseLiveBridge):
                         await asyncio.sleep(slack)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - a send error ends the call, not crash
-            log.exception("telephony sender stopped")
+        except Exception:  # noqa: BLE001 - WS closed mid-send (teardown race); stop quietly
             self._stopped = True
