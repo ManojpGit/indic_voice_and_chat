@@ -72,6 +72,15 @@ class GeminiLiveSession(IRealtimeSession):
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             tools=[_to_tool(types, t) for t in config.tools] or None,
+            max_output_tokens=config.max_output_tokens,
+            # Explicit realtime-input/VAD so multi-turn works: auto speech detection,
+            # caller speech interrupts the agent (native barge-in), and a turn is
+            # just the detected speech (not the surrounding silence).
+            realtime_input_config=types.RealtimeInputConfig(
+                automatic_activity_detection=types.AutomaticActivityDetection(),
+                activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
+                turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
+            ),
         )
         last_err: Exception | None = None
         for attempt in range(_OPEN_RETRIES):
@@ -100,6 +109,18 @@ class GeminiLiveSession(IRealtimeSession):
             turn_complete=True)
 
     async def events(self) -> AsyncIterator[RealtimeEvent]:
+        # session.receive() is a PER-TURN generator (it ends at turn_complete),
+        # so loop it to read every turn. When the session closes, receive()
+        # yields nothing and we stop.
+        while True:
+            produced = False
+            async for ev in self._events_one_turn():
+                produced = True
+                yield ev
+            if not produced:
+                return
+
+    async def _events_one_turn(self) -> AsyncIterator[RealtimeEvent]:
         async for msg in self._session.receive():
             sc = getattr(msg, "server_content", None)
             if sc is not None:

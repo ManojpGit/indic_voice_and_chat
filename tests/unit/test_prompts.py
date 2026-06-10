@@ -174,7 +174,7 @@ def test_s2s_system_instruction_has_persona_tool_no_envelope() -> None:
     assert "Priya" in instr and "Acme Telecom" in instr
     assert "Plan B has 500GB data" in instr          # talking points / knowledge present
     assert "record_turn_signal" in instr             # tool-based control
-    assert "1-2 sentences" in instr                  # verbosity guard
+    assert "BE BRIEF" in instr                       # verbosity guard
     assert "code-switch" in instr                    # Hinglish encouraged
     # cascade-only artifacts must NOT leak into the S2S instruction
     assert "JSON object" not in instr

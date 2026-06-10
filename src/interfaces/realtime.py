@@ -30,6 +30,7 @@ class RealtimeConfig:
     language_code: Optional[str] = None
     system_instruction: str = ""
     tools: list[RealtimeTool] = field(default_factory=list)
+    max_output_tokens: Optional[int] = None   # cap reply length (voice: keep short)
 
 
 @dataclass

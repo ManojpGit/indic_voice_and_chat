@@ -15,8 +15,14 @@ class _FakeSession:
     def __init__(self, msgs):
         self._msgs = msgs
         self.tool_responses = []
+        self._consumed = False
 
     async def receive(self):
+        # Per-turn generator: yields the turn's messages once, then nothing
+        # (session closed) — matching the real SDK so events()'s loop terminates.
+        if self._consumed:
+            return
+        self._consumed = True
         for m in self._msgs:
             yield m
 

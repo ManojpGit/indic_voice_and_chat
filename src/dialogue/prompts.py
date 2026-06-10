@@ -333,12 +333,15 @@ def build_s2s_system_instruction(
 
     parts.append(
         "Core behavior every turn:\n"
-        "1. LISTEN FIRST: answer what the customer actually said, directly and helpfully, in "
-        "your own warm words (draw on the knowledge below — never recite).\n"
-        "2. THEN gently move toward your objective; talking points are material, not a checklist.\n"
-        "3. REDIRECT ONLY WHEN the input is unrelated to this call: briefly acknowledge, then "
-        "steer back. On-topic questions/concerns: answer, never deflect.\n"
-        "4. Keep every reply SHORT — 1-2 sentences. This is a live voice call, not chat."
+        "1. CRITICAL — BE BRIEF: reply in ONE short sentence (two at the very most), then STOP "
+        "and let the customer talk. This is a fast back-and-forth phone call — never give long "
+        "explanations, lists, or monologues. If you have more to say, say it across turns.\n"
+        "2. LISTEN FIRST: answer what the customer actually said, directly, in your own warm "
+        "words (draw on the knowledge below — never recite).\n"
+        "3. THEN nudge gently toward your objective with ONE short line; talking points are "
+        "material, not a checklist to read out.\n"
+        "4. REDIRECT ONLY WHEN the input is unrelated: briefly acknowledge, then steer back. "
+        "On-topic questions/concerns: answer, never deflect."
     )
 
     if script.objective:
