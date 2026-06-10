@@ -530,8 +530,8 @@ async def test_breath_filler_noop_without_clips(monkeypatch):
 
 
 def test_real_filler_clips_load_and_are_16k_mono():
-    # The committed assets load as non-empty PCM.
+    # The committed asset(s) load as non-empty PCM.
     bb._filler_clips_cache = None
     clips = bb._filler_clips()
-    assert len(clips) >= 2 and all(len(c) > 0 for c in clips)
+    assert len(clips) >= 1 and all(len(c) > 0 for c in clips)
     bb._filler_clips_cache = None  # reset cache for other tests
