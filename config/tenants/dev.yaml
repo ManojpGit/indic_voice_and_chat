@@ -1,20 +1,27 @@
 # Dev / smoke-test tenant.
 #
 # Set these environment variables locally (e.g. in a gitignored .env, or
-# your shell rc) before running live tests or placing a real call:
+# your shell rc) before running live tests or placing a real call. The list
+# below matches the providers this tenant actually uses (see the pipeline
+# block: Deepgram streaming STT, Gemini LLM, Sarvam TTS, Stringee telephony):
 #
-#   export TENANT_DEV_GROQ_KEY=gsk_...           # Groq Whisper STT + (unused here) Groq LLM
-#   export TENANT_DEV_GEMINI_KEY=AIza...         # Google Gemini LLM
+#   export TENANT_DEV_DEEPGRAM_KEY=...           # Deepgram streaming STT (dev console live path)
+#   export TENANT_DEV_GROQ_KEY=gsk_...           # Groq Whisper STT (batch / telephony fallback)
+#   export TENANT_DEV_GEMINI_KEY=AIza...         # Google Gemini LLM (active)
 #   export TENANT_DEV_SARVAM_KEY=...             # Sarvam TTS
-#   export TENANT_DEV_TWILIO_SID=AC...           # Twilio Account SID
-#   export TENANT_DEV_TWILIO_TOKEN=...           # Twilio Auth Token
+#   export STRINGEE_API_KEY_SID=SK....           # Stringee telephony (read by the adapter directly,
+#   export STRINGEE_API_KEY_SECRET=...           #   not via *_env; region-scoped — see STRINGEE_BASE_URL)
 #   export TENANT_DEV_WEBHOOK_SECRET=...         # used to verify inbound webhook signatures
 #
 # To grant tenant API access, also set:
 #   export TENANT_DEV_API_TOKENS=dev-token-1,dev-token-2
 #
-# Twilio's voice webhook + Media Streams URL must point at a publicly
-# reachable host (use ngrok during local dev — see docs/live-testing.md).
+# Optional (only if you flip telephony.provider back to twilio for comparison):
+#   export TENANT_DEV_TWILIO_SID=AC...           # Twilio Account SID
+#   export TENANT_DEV_TWILIO_TOKEN=...           # Twilio Auth Token
+#
+# The telephony answer/event/status webhooks must point at a publicly reachable
+# host (the deployed app, or ngrok during local dev — see docs/live-testing.md).
 # Update ``webhook_base_url`` below before placing a real call.
 
 id: t_dev
