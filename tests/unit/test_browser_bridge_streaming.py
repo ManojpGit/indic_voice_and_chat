@@ -448,3 +448,25 @@ async def test_consumer_no_barge_when_disabled(monkeypatch):
     bridge._cancel_event = asyncio.Event()
     await bridge._consume_stream_events(session)
     assert not bridge._cancel_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_mic_fed_during_playback_when_barge_enabled():
+    bridge, session = _bridge([])
+    bridge._stream_session = session
+    bridge._agent_busy = False
+    bridge._play_until = _time.monotonic() + 5         # agent audio still playing
+    bridge._barge_enabled = True
+    await bridge._on_pcm_frame(b"\x01\x02" * 160)
+    assert session.sent == [b"\x01\x02" * 160]         # fed (so Deepgram can hear the interruption)
+
+
+@pytest.mark.asyncio
+async def test_mic_gated_during_playback_when_barge_disabled():
+    bridge, session = _bridge([])
+    bridge._stream_session = session
+    bridge._agent_busy = False
+    bridge._play_until = _time.monotonic() + 5
+    bridge._barge_enabled = False
+    await bridge._on_pcm_frame(b"\x01\x02" * 160)
+    assert session.sent == []                          # echo gate still drops it

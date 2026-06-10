@@ -241,14 +241,12 @@ class BrowserVoiceBridge:
         # the mic while the agent speaks; the _agent_busy gate is belt-and-braces
         # so the agent's own audio is never streamed to the recognizer.
         if self._stream_session is not None:
-            # Don't feed the recognizer while the agent is generating a reply
-            # (_agent_busy) OR while its audio is still playing on the client
-            # (now < _play_until). Otherwise the agent's own voice (echo) reaches
-            # Deepgram as a continuous audio stream, which prevents it from
-            # detecting an utterance-end gap — endpointing then stalls for many
-            # seconds after the reply (the "stuck in listening" symptom), only
-            # recovering once a real silence finally appears.
-            if self._agent_busy or time.monotonic() < self._play_until:
+            # Half-duplex echo gate — drop the agent's own audio. Skipped in
+            # barge mode: headphones ⇒ no echo, and we need the user's audio
+            # during playback to detect an interruption.
+            if not self._barge_enabled and (
+                self._agent_busy or time.monotonic() < self._play_until
+            ):
                 return
             try:
                 await self._stream_session.send(pcm16)
