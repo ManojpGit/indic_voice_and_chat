@@ -32,11 +32,26 @@ default_language: hi
 webhook_secret_env: TENANT_DEV_WEBHOOK_SECRET
 
 pipeline:
+  # layered = STT->LLM->TTS cascade (default). s2s = end-to-end speech-to-speech
+  # (Gemini Live, see pipeline.realtime). The dev console can also pick S2S per
+  # connection regardless of this default.
+  mode: layered
+
   stt:
     provider: groq
     model: whisper-large-v3
     language: hi-IN
     api_key_env: TENANT_DEV_GROQ_KEY
+
+  # Speech-to-speech (Gemini Live). Spike: ~1.4s first-word + natural Hinglish.
+  # The dev console S2S path uses this; voice is selectable from allowed_voices.
+  realtime:
+    provider: gemini_live
+    model: gemini-3.1-flash-live-preview
+    voice: Aoede
+    allowed_voices: [Aoede, Kore, Leda]
+    language_code: hi-IN
+    api_key_env: TENANT_DEV_GEMINI_KEY
 
   # Streaming STT for the dev console (Deepgram live). When present, the browser
   # bridge streams audio live and uses Deepgram endpointing; pipeline.stt (Groq)

@@ -164,3 +164,18 @@ def test_voicebot_prompt_renders_opening_tokens() -> None:
     assert "{lead_name}" not in prompt
     # Unknown tokens are left intact rather than crashing.
     assert "{unknown_token}" in prompt
+
+
+def test_s2s_system_instruction_has_persona_tool_no_envelope() -> None:
+    from src.dialogue.prompts import build_s2s_system_instruction
+    script = VoiceBotScript.from_campaign_yaml(SCRIPT)
+    schema = SlotSchema.from_campaign_yaml(yaml.safe_load(SLOT_YAML))
+    instr = build_s2s_system_instruction(script, schema)
+    assert "Priya" in instr and "Acme Telecom" in instr
+    assert "Plan B has 500GB data" in instr          # talking points / knowledge present
+    assert "record_turn_signal" in instr             # tool-based control
+    assert "BE BRIEF" in instr                       # verbosity guard
+    assert "code-switch" in instr                    # Hinglish encouraged
+    # cascade-only artifacts must NOT leak into the S2S instruction
+    assert "JSON object" not in instr
+    assert "Devanagari" not in instr

@@ -54,7 +54,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -95,6 +95,17 @@ class TenantStreamingSTTConfig(BaseModel):
     api_key_env: Optional[str] = None
 
 
+class TenantRealtimeConfig(BaseModel):
+    """Speech-to-speech (audio-in/audio-out) provider, e.g. Gemini Live. Active
+    only when pipeline.mode == 's2s' (or the dev console's S2S path is used)."""
+    provider: Optional[str] = None          # e.g. "gemini_live"
+    model: Optional[str] = None             # e.g. "gemini-3.1-flash-live-preview"
+    voice: Optional[str] = None             # default prebuilt voice
+    allowed_voices: list[str] = Field(default_factory=list)
+    language_code: Optional[str] = None     # e.g. "hi-IN"
+    api_key_env: Optional[str] = None
+
+
 class TenantLLMConfig(BaseModel):
     provider: Optional[str] = None
     model: Optional[str] = None
@@ -127,8 +138,12 @@ class TenantVectorStoreConfig(BaseModel):
 
 
 class TenantPipelineConfig(BaseModel):
+    # "layered" = the STT->LLM->TTS cascade (default); "s2s" = end-to-end
+    # speech-to-speech via pipeline.realtime (e.g. Gemini Live).
+    mode: Literal["layered", "s2s"] = "layered"
     stt: TenantSTTConfig = Field(default_factory=TenantSTTConfig)
     stt_streaming: Optional[TenantStreamingSTTConfig] = None
+    realtime: Optional[TenantRealtimeConfig] = None
     llm: TenantLLMConfig = Field(default_factory=TenantLLMConfig)
     tts: TenantTTSConfig = Field(default_factory=TenantTTSConfig)
     telephony: TenantTelephonyConfig = Field(default_factory=TenantTelephonyConfig)
@@ -264,6 +279,10 @@ def validate_credentials(settings: TenantSettings, *, source: str = "") -> None:
             gaps.append(
                 f"pipeline.telephony.auth_token_env (provider={p.telephony.provider!r})"
             )
+    if p.realtime and p.realtime.provider and not p.realtime.api_key_env:
+        gaps.append(f"pipeline.realtime.api_key_env (provider={p.realtime.provider!r})")
+    if p.mode == "s2s" and not (p.realtime and p.realtime.provider):
+        gaps.append("pipeline.realtime (provider) — required when pipeline.mode == 's2s'")
 
     if gaps:
         prefix = f"{source}: " if source else ""

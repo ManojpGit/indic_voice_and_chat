@@ -31,6 +31,17 @@
     <label>Lead name <input id="leadName" value="Raju" placeholder="e.g. Raju" style="width:8rem" /></label>
     <label><input type="checkbox" id="halfDuplex" /> Mute mic while agent speaks <span class="hint">(turn on for speakers)</span></label>
     <label><input type="checkbox" id="bargeIn" /> Allow interruptions (experimental)</label>
+    <label>Mode
+      <select id="mode">
+        <option value="layered">Layered (cascade)</option>
+        <option value="s2s">S2S (Gemini Live)</option>
+      </select>
+    </label>
+    <label>Voice
+      <select id="voice">
+        <option>Aoede</option><option>Kore</option><option>Leda</option>
+      </select>
+    </label>
     <span id="status">idle</span>
   </div>
   <div class="panes">
@@ -151,8 +162,12 @@ registerProcessor('capture-processor', CaptureProcessor);
 async function start() {
   const wsProto = location.protocol === "https:" ? "wss" : "ws";
   const leadName = ($("leadName").value || "").trim();
-  const qs = "tenant=dev" + (leadName ? "&lead_name=" + encodeURIComponent(leadName) : "");
-  ws = new WebSocket(`${wsProto}://${location.host}/api/v1/dev/voice?${qs}`);
+  const mode = $("mode").value;
+  // S2S (Gemini Live) uses a sibling endpoint + a voice; layered = the cascade.
+  const path = mode === "s2s" ? "/api/v1/dev/voice-live" : "/api/v1/dev/voice";
+  let qs = "tenant=dev" + (leadName ? "&lead_name=" + encodeURIComponent(leadName) : "");
+  if (mode === "s2s") qs += "&voice=" + encodeURIComponent($("voice").value);
+  ws = new WebSocket(`${wsProto}://${location.host}${path}?${qs}`);
   ws.binaryType = "arraybuffer";
 
   ws.onopen = async () => {
@@ -172,7 +187,10 @@ async function start() {
         // Half-duplex (speakers): mute the mic while the agent speaks. Skipped
         // when barge-in is on — the server needs the mic to hear interruptions
         // (headphones, no echo). Server-side detection replaces the old client VAD.
-        if ($("halfDuplex").checked && speaking && !$("bargeIn").checked) return;
+        // S2S (Gemini Live) is always full-duplex: the model does its own VAD +
+        // native barge-in, so the mic must stream continuously.
+        const s2s = $("mode").value === "s2s";
+        if (!s2s && $("halfDuplex").checked && speaking && !$("bargeIn").checked) return;
         const int16 = downsampleToInt16(e.data, audioCtx.sampleRate);
         if (ws.readyState === WebSocket.OPEN) ws.send(int16.buffer);
       };
