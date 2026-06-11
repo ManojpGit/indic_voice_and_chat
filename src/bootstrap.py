@@ -110,10 +110,18 @@ class _CallSpec:
     lead_data: dict
 
 
+def _override_lead_data(override: dict | None) -> dict:
+    """Build agent lead_data from a dev-console override's lead_name (if any)."""
+    name = (override or {}).get("lead_name", "").strip()
+    return {"lead_name": name, "name": name} if name else {}
+
+
 def _build_s2s_telephony_bridge(
     providers: TenantProviders, tenant: TenantContext, script: VoiceBotScript,
     slots: SlotSchema, websocket: WebSocket, session_store: SessionStore | None,
     *, encoding: str, sid_field: str, supports_clear: bool,
+    call_sid_field: str = "callSid", voice_override: str | None = None,
+    lead_data: dict | None = None,
 ):
     """Build a TelephonyLiveBridge (Gemini Live over the media stream) for a call
     whose tenant has pipeline.mode == 's2s'. Mirrors the cascade agent assembly
@@ -138,25 +146,33 @@ def _build_s2s_telephony_bridge(
         store = SessionStore(redis=session_store.redis, ttl_seconds=session_store.ttl,
                              tenant_id=tenant.id)
     session_id = f"call_{uuid.uuid4().hex[:12]}"
+    lead_data = lead_data or {}
     agent = VoiceBotAgent(
-        session=AgentSession(session_id=session_id), state_machine=AgentStateMachine(),
+        session=AgentSession(session_id=session_id, lead_data=lead_data),
+        state_machine=AgentStateMachine(),
         slot_schema=slots, script=script, engine=engine, store=store)
+    # Voice: a dev-console override wins (validated against allowed_voices); else config.
+    voice = (voice_override or "").strip() or rt.voice
+    allowed = getattr(rt, "allowed_voices", None)
+    if allowed and voice not in allowed:
+        voice = rt.voice
     key = tenant.secret(rt.api_key_env) if rt.api_key_env else None
     config = RealtimeConfig(
-        model=rt.model, voice=rt.voice, language_code=rt.language_code,
-        system_instruction=build_s2s_system_instruction(script, slots, {}),
+        model=rt.model, voice=voice, language_code=rt.language_code,
+        system_instruction=build_s2s_system_instruction(script, slots, lead_data),
         tools=[RECORD_TURN_SIGNAL])
 
     async def connect(cfg: RealtimeConfig):
         return await GeminiLiveSession.connect(cfg, api_key=key)
 
     log.info("s2s telephony bridge built call", extra={
-        "tenant": tenant.slug, "session_id": session_id, "voice": rt.voice,
+        "tenant": tenant.slug, "session_id": session_id, "voice": voice,
         "model": rt.model, "encoding": encoding})
     return TelephonyLiveBridge(
         websocket=websocket, agent=agent, config=config, connect_session=connect, llm=llm,
         tenant_timezone=getattr(tenant.settings, "timezone", "Asia/Kolkata"),
-        encoding=encoding, sid_field=sid_field, supports_clear=supports_clear)
+        encoding=encoding, sid_field=sid_field, supports_clear=supports_clear,
+        call_sid_field=call_sid_field)
 
 
 def make_bridge_factory(
@@ -175,12 +191,20 @@ def make_bridge_factory(
     cfg = bridge_config or TwilioBridgeConfig()
 
     def factory(websocket: WebSocket, tenant: TenantContext):
+        from src.api import dev_call_control
+
+        # A dev-console "place call" can override mode/voice for this one call.
+        override = dev_call_control.pop_override(tenant.slug)
+        mode = (override or {}).get("mode") or getattr(
+            tenant.settings.pipeline, "mode", "layered")
         # Speech-to-speech path: when the tenant is in s2s mode, drive Gemini Live
         # over the Twilio media stream instead of the STT->LLM->TTS cascade.
-        if getattr(tenant.settings.pipeline, "mode", "layered") == "s2s":
+        if mode == "s2s":
             return _build_s2s_telephony_bridge(
                 providers, tenant, script, slots, websocket, session_store,
-                encoding="mulaw", sid_field="streamSid", supports_clear=True)
+                encoding="mulaw", sid_field="streamSid", supports_clear=True,
+                call_sid_field="callSid", voice_override=(override or {}).get("voice"),
+                lead_data=_override_lead_data(override))
         # Build a fresh agent per call; provider clients are cached on the
         # registry so we don't pay reconstruction cost.
         stt = providers.get_stt(tenant)
@@ -311,12 +335,19 @@ def make_exotel_bridge_factory(
     cfg = bridge_config or ExotelBridgeConfig()
 
     def factory(websocket: WebSocket, tenant: TenantContext):
+        from src.api import dev_call_control
+
+        override = dev_call_control.pop_override(tenant.slug)
+        mode = (override or {}).get("mode") or getattr(
+            tenant.settings.pipeline, "mode", "layered")
         # S2S path: drive Gemini Live over the Exotel media stream (raw PCM16@8k,
         # snake_case stream_sid, no `clear` frame) when the tenant is in s2s mode.
-        if getattr(tenant.settings.pipeline, "mode", "layered") == "s2s":
+        if mode == "s2s":
             return _build_s2s_telephony_bridge(
                 providers, tenant, script, slots, websocket, session_store,
-                encoding="pcm", sid_field="stream_sid", supports_clear=False)
+                encoding="pcm", sid_field="stream_sid", supports_clear=False,
+                call_sid_field="call_sid", voice_override=(override or {}).get("voice"),
+                lead_data=_override_lead_data(override))
         stt = providers.get_stt(tenant)
         llm = providers.get_llm(tenant)
         tts = providers.get_tts(tenant)
