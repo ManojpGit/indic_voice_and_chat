@@ -136,19 +136,20 @@ class StringeeAdapter(ITelephonyProvider):
         # BARE digits (Stringee rejects '+E.164' as r:10).
         from_number = _bare_number(config.from_number)
         to_number = _bare_number(config.to_number)
-        # ``from.type: internal`` — the working call's debugger shows the from leg
-        # as ``type:internal`` with ``fromInternal=true``; an external from never
-        # produces CALL_START / fetches the Answer URL. ``to`` is the external PSTN
-        # destination. Our ``answer_url`` is sent in the callout (no ``actions``,
-        # which would make Stringee skip it); our routes accept GET+POST.
+        # ``from`` is the INTERNAL user itself: type=internal, number=<userId>
+        # (last untried variant — making the call originate AS the Stringee user,
+        # which is what an internal call really is). Falls back to the external DID
+        # if no user id is configured. ``to`` is the external PSTN destination.
+        if self._user_id:
+            from_leg = {"type": "internal", "number": self._user_id, "alias": self._user_id}
+        else:
+            from_leg = {"type": "external", "number": from_number, "alias": from_number}
         body: dict[str, Any] = {
-            "from": {"type": "internal", "number": from_number, "alias": from_number},
+            "from": from_leg,
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
             "answer_url": config.webhook_url,
         }
-        # Stringee: ``userId`` is mandatory (can't be null) — the internal user the
-        # call originates as. Without it the callout stays external and Stringee
-        # never produces CALL_START / fetches the Answer URL.
+        # Stringee: ``userId`` is mandatory (can't be null) — keep it in the body too.
         if self._user_id:
             body["userId"] = self._user_id
         # Log WHICH project (keySid=iss) + region (base) is authenticating, so a
