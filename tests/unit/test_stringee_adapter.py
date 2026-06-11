@@ -105,11 +105,10 @@ async def test_initiate_call_body_shape(adapter_with_token: StringeeAdapter) -> 
     )
     await adapter_with_token.initiate_call(cfg)
     body = json.loads(route.calls.last.request.content.decode())
-    # `from` is an INTERNAL Stringee user id (default "test"), NOT the PSTN caller-ID.
-    assert body["from"]["type"] == "internal"
-    assert body["from"]["number"] == "test"
-    assert body["from"]["alias"] == "test"
-    # `to` is the real PSTN destination — external, BARE digits ('+' stripped).
+    # Both legs are external PSTN, BARE digits ('+' stripped). `from` = DID/caller-ID.
+    assert body["from"]["type"] == "external"
+    assert body["from"]["number"] == "918888"
+    assert body["from"]["alias"] == "918888"
     assert body["to"][0]["type"] == "external"
     assert body["to"][0]["number"] == "919999"
     # answer_url is configured on the Stringee dashboard, NOT sent in the payload.

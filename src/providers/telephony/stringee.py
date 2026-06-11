@@ -127,14 +127,15 @@ class StringeeAdapter(ITelephonyProvider):
         """
         # ``to`` is the real PSTN destination -> "external", BARE digits (Stringee
         # rejects '+E.164' as r:10 FROM/TO_NUMBER_INVALID_FORMAT).
+        # Both legs are ``external`` PSTN numbers, BARE digits (Stringee rejects
+        # '+E.164' as r:10). ``from`` is the project's DID/caller-ID. We send NO
+        # ``answer_url`` and NO ``actions`` — Stringee uses the project-configured
+        # Answer URL for the SCCO (a present ``actions``, even [], makes Stringee
+        # skip the Answer URL). Matches a known-working Stringee integration.
+        from_number = _bare_number(config.from_number)
         to_number = _bare_number(config.to_number)
-        # ``from`` is an INTERNAL Stringee USER (a registered user id), not the PSTN
-        # caller-ID — that's what ``type: internal`` requires. Defaults to "test";
-        # override via STRINGEE_FROM_USER. (answer_url is configured on the Stringee
-        # dashboard, not sent here; no inline ``actions`` either.)
-        from_user = os.environ.get("STRINGEE_FROM_USER", "test")
         body: dict[str, Any] = {
-            "from": {"type": "internal", "number": from_user, "alias": from_user},
+            "from": {"type": "external", "number": from_number, "alias": from_number},
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
         }
         async with httpx.AsyncClient(timeout=self._timeout) as client:
