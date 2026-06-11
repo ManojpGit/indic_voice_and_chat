@@ -24,7 +24,7 @@ Headers:
 
 Body:
 {
-  "from": { "type": "internal", "number": "test", "alias": "test" },
+  "from": { "type": "external", "number": "918204268005", "alias": "918204268005" },
   "to":   [ { "type": "external", "number": "918618795697", "alias": "918618795697" } ]
 }
 ```
