@@ -135,6 +135,21 @@ async def test_initiate_call_body_shape(adapter_with_token: StringeeAdapter) -> 
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_initiate_call_includes_userid_in_body_when_set() -> None:
+    """Stringee requires a non-null userId on the callout — sent in the body."""
+    import json
+    a = StringeeAdapter({"api_key_sid": "s", "api_key_secret": "x",
+                         "access_token": "t", "user_id": "ab858a8c7ad447d2a0b705ee93f8f134"})
+    route = respx.post(f"{STRINGEE_BASE_URL}/v1/call2/callout").mock(
+        return_value=Response(200, json={"call_id": "STR1", "status": "STARTING"}))
+    await a.initiate_call(CallConfig(to_number="+919999", from_number="+918888",
+                                     webhook_url="https://x/answer", timeout_seconds=30))
+    body = json.loads(route.calls.last.request.content.decode())
+    assert body["userId"] == "ab858a8c7ad447d2a0b705ee93f8f134"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_initiate_call_status_busy_maps_correctly(
     adapter_with_token: StringeeAdapter,
 ) -> None:
