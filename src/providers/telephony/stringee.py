@@ -133,17 +133,16 @@ class StringeeAdapter(ITelephonyProvider):
         returns an SCC (Stringee Call Control) script when the destination
         picks up — equivalent to TwiML.
         """
-        # Both legs are ``external`` PSTN numbers, BARE digits (Stringee rejects
-        # '+E.164' as r:10). ``from`` is the project's DID/caller-ID.
+        # BARE digits (Stringee rejects '+E.164' as r:10).
         from_number = _bare_number(config.from_number)
         to_number = _bare_number(config.to_number)
-        # Send OUR ``answer_url`` in the callout so Stringee fetches OUR SCCO on
-        # pickup — this overrides the project's dashboard Answer URL (important when
-        # the project belongs to someone else). NO ``actions`` (even [] makes
-        # Stringee skip the answer_url). Our routes accept GET+POST so the fetch
-        # succeeds.
+        # ``from.type: internal`` — the working call's debugger shows the from leg
+        # as ``type:internal`` with ``fromInternal=true``; an external from never
+        # produces CALL_START / fetches the Answer URL. ``to`` is the external PSTN
+        # destination. Our ``answer_url`` is sent in the callout (no ``actions``,
+        # which would make Stringee skip it); our routes accept GET+POST.
         body: dict[str, Any] = {
-            "from": {"type": "external", "number": from_number, "alias": from_number},
+            "from": {"type": "internal", "number": from_number, "alias": from_number},
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
             "answer_url": config.webhook_url,
         }
