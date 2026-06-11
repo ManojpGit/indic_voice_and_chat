@@ -84,6 +84,9 @@ class StringeeAdapter(ITelephonyProvider):
             or STRINGEE_BASE_URL
         ).rstrip("/")
         self._timeout = config.get("timeout", 30.0)
+        # Stringee requires a non-null ``userId`` on the callout (the internal user
+        # the call originates as). Set STRINGEE_USER_ID to the project's user id.
+        self._user_id: str | None = config.get("user_id") or os.environ.get("STRINGEE_USER_ID")
         # Tests can inject a pre-built bearer; otherwise we mint a fresh JWT.
         self._token_override: str | None = config.get("access_token")
 
@@ -144,6 +147,11 @@ class StringeeAdapter(ITelephonyProvider):
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
             "answer_url": config.webhook_url,
         }
+        # Stringee: ``userId`` is mandatory (can't be null) — the internal user the
+        # call originates as. Without it the callout stays external and Stringee
+        # never produces CALL_START / fetches the Answer URL.
+        if self._user_id:
+            body["userId"] = self._user_id
         # Log WHICH project (keySid=iss) + region (base) is authenticating, so a
         # FROM_NUMBER_NOT_BELONG_YOUR_PROJECT (r:15) is easy to diagnose: the
         # number is fine, the keys/region just don't own it.
