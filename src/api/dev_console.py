@@ -85,9 +85,13 @@ async def dev_voice_page() -> FileResponse:
 # resolve from the provider's env vars); the caller-ID comes from
 # pipeline.telephony.outbound_from[provider]. Needs a publicly reachable host.
 
-# Providers that run over the S2S/cascade media-stream bridges (Stringee is a
-# separate turn-based IVR path, not placed from this panel).
-_PLACE_CALL_PROVIDERS = ("twilio", "exotel")
+# Providers the dev console can place an outbound call with, and the answer-webhook
+# path each one uses. Twilio/Exotel run the media-stream bridge (S2S or cascade,
+# per the Mode override); Stringee is a turn-based IVR with its own /stringee/answer.
+_ANSWER_PATH = {"twilio": "twilio/voice", "exotel": "exotel/voice", "stringee": "stringee/answer"}
+_PLACE_CALL_PROVIDERS = tuple(_ANSWER_PATH)
+# Stringee is IVR-only — Mode/Voice (S2S vs cascade) don't apply to it.
+_STREAM_PROVIDERS = ("twilio", "exotel")
 
 
 class PlaceCallRequest(BaseModel):
@@ -138,18 +142,21 @@ async def dev_place_call(req: PlaceCallRequest) -> dict:
     except Exception as e:  # noqa: BLE001 - e.g. missing credentials in env
         raise HTTPException(status_code=400, detail=f"telephony adapter for '{provider}' unavailable: {e}")
 
-    # Thread the console's Mode/Voice/lead to the call the bridge factory builds.
-    dev_call_control.set_override(
-        tenant.slug, mode=req.mode, voice=req.voice.strip(), lead_name=req.lead_name.strip())
+    # Thread the console's Mode/Voice/lead to the media-stream bridge factory.
+    # Stringee ignores it (turn-based IVR), so don't leave a stale override.
+    if provider in _STREAM_PROVIDERS:
+        dev_call_control.set_override(
+            tenant.slug, mode=req.mode, voice=req.voice.strip(), lead_name=req.lead_name.strip())
     cfg = CallConfig(
         to_number=req.to_number.strip(),
         from_number=from_number,
-        webhook_url=f"{tel.webhook_base_url.rstrip('/')}/{provider}/voice",
+        webhook_url=f"{tel.webhook_base_url.rstrip('/')}/{_ANSWER_PATH[provider]}",
     )
     try:
         session = await adapter.initiate_call(cfg)
     except Exception as e:  # noqa: BLE001 - don't leave a stale override on failure
-        dev_call_control.pop_override(tenant.slug)
+        if provider in _STREAM_PROVIDERS:
+            dev_call_control.pop_override(tenant.slug)
         log.exception("dev place-call failed", extra={"tenant": tenant.slug, "provider": provider})
         raise HTTPException(status_code=502, detail=f"call failed: {e}")
 

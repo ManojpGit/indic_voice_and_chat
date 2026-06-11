@@ -290,6 +290,9 @@ async def stringee_answer(request: Request):
     )
     registry.put(bridge)
     scco = await bridge.start_call()
+    if call_id:
+        from src.api import dev_call_control
+        dev_call_control.monitor.set_status(call_id, "answered")
     log.info("stringee answer registered", extra={"tenant": tenant.slug, "call_id": call_id})
     return JSONResponse(scco)
 
@@ -356,4 +359,7 @@ async def stringee_status(tenant_slug: str, request: Request):
                                         "method": request.method, "data": data})
     if status in ("ENDED", "FAILED", "NO_ANSWER", "BUSY"):
         await registry.end(call_id)
+        if call_id:
+            from src.api import dev_call_control
+            dev_call_control.monitor.set_status(call_id, "ended")
     return Response(status_code=200)
