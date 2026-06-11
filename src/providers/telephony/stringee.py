@@ -131,7 +131,10 @@ class StringeeAdapter(ITelephonyProvider):
         # ``answer_url`` — Stringee treats a present ``actions`` as the SCCO and
         # never GETs the answer_url, so the IVR is never invoked.
         body: dict[str, Any] = {
-            "from": {"type": "external", "number": from_number, "alias": from_number},
+            # ``from`` is the originating Stringee-side identity for the outbound
+            # callout (per Stringee support) -> type "internal"; ``to`` is the real
+            # PSTN destination -> "external".
+            "from": {"type": "internal", "number": from_number, "alias": from_number},
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
             "answer_url": config.webhook_url,
         }
