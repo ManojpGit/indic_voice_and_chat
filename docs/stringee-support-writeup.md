@@ -24,8 +24,9 @@ Headers:
 
 Body:
 {
-  "from": { "type": "external", "number": "918204268005", "alias": "918204268005" },
-  "to":   [ { "type": "external", "number": "918618795697", "alias": "918618795697" } ]
+  "from": { "type": "external", "number": "918204267969", "alias": "918204267969" },
+  "to":   [ { "type": "external", "number": "918618795697", "alias": "918618795697" } ],
+  "answer_url": "https://p01--voice-bot--9f4wlvz8tgw7.code.run/api/v1/telephony/stringee/answer"
 }
 ```
 
