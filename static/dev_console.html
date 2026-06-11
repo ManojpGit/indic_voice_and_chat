@@ -47,6 +47,7 @@
         <option value="WebConsole">WebConsole (browser)</option>
         <option value="twilio">Twilio (place call)</option>
         <option value="exotel">Exotel (place call)</option>
+        <option value="stringee">Stringee (place call)</option>
       </select>
     </label>
     <label id="toNumberLabel" style="display:none">Call <input id="toNumber" value="+918618795697" placeholder="+9199…" style="width:9rem" /></label>
@@ -377,7 +378,7 @@ function stopWatching() {
 $("start").onclick = async () => {
   if (callPoll) { stopWatching(); setStatus("stopped watching"); return; }
   const tel = $("telephony").value;
-  if (tel === "twilio" || tel === "exotel") { placeCall(tel); return; }
+  if (tel === "twilio" || tel === "exotel" || tel === "stringee") { placeCall(tel); return; }
   if (running) { endCall(); return; }
   // Acquire the mic + audio context DURING the click gesture, before opening the
   // WebSocket. This ties the permission prompt to the user gesture (strict

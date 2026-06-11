@@ -116,9 +116,37 @@ def test_place_call_rejects_unsupported_provider():
     _register_dev_tenant()
     try:
         resp = _client().post("/dev/place-call", json={
-            "provider": "stringee", "to_number": "+919999999999"})
+            "provider": "telnyx", "to_number": "+919999999999"})
         assert resp.status_code == 400
-        assert "stringee" in resp.json()["detail"]
+        assert "telnyx" in resp.json()["detail"]
+    finally:
+        set_tenant_resolver(None)
+
+
+def test_place_call_stringee_uses_answer_webhook_no_override(monkeypatch):
+    """Stringee is accepted, dials from its configured from_number via the IVR
+    /stringee/answer webhook, and does NOT set a Mode/Voice override (IVR-only)."""
+    captured = {}
+
+    class _FakeAdapter:
+        async def initiate_call(self, cfg):
+            captured["cfg"] = cfg
+            return CallSession(session_id="STR1", status="starting",
+                               to_number=cfg.to_number, from_number=cfg.from_number)
+
+    monkeypatch.setattr(devmod, "get_telephony_provider", lambda cfg: _FakeAdapter())
+    _register_dev_tenant(provider="stringee")          # from_number +918204268005
+    try:
+        resp = _client().post("/dev/place-call", json={
+            "provider": "stringee", "to_number": "+918618795697", "mode": "s2s", "voice": "Kore"})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["call_sid"] == "STR1"
+        cfg = captured["cfg"]
+        assert cfg.from_number == "+918204268005"
+        assert cfg.webhook_url == "https://example.test/api/v1/telephony/stringee/answer"
+        from src.api import dev_call_control
+        assert dev_call_control.monitor.get("STR1")["status"] == "calling"
+        assert dev_call_control.pop_override("dev") is None     # IVR ignores Mode/Voice
     finally:
         set_tenant_resolver(None)
 
