@@ -121,8 +121,9 @@ async def test_initiate_call_body_shape(adapter_with_token: StringeeAdapter) -> 
     )
     await adapter_with_token.initiate_call(cfg)
     body = json.loads(route.calls.last.request.content.decode())
-    # Both legs are external PSTN, BARE digits ('+' stripped). `from` = DID/caller-ID.
-    assert body["from"]["type"] == "external"
+    # `from.type` is internal (the working call's from leg is internal); `to` is the
+    # external PSTN destination. BARE digits ('+' stripped).
+    assert body["from"]["type"] == "internal"
     assert body["from"]["number"] == "918888"
     assert body["from"]["alias"] == "918888"
     assert body["to"][0]["type"] == "external"
