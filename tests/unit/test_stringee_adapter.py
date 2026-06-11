@@ -76,6 +76,22 @@ async def test_initiate_call_raises_on_nonzero_r_code(
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_initiate_call_includes_body_on_http_error(
+    adapter_with_token: StringeeAdapter,
+) -> None:
+    """A 403 (or other HTTP error) must carry Stringee's response body so the
+    reason is visible, not a bare 'Forbidden'."""
+    respx.post(f"{STRINGEE_BASE_URL}/v1/call2/callout").mock(
+        return_value=Response(403, text='{"r":5,"message":"user not found"}'),
+    )
+    cfg = CallConfig(to_number="+919999", from_number="+918888",
+                     webhook_url="https://x", timeout_seconds=30)
+    with pytest.raises(RuntimeError, match="403.*user not found"):
+        await adapter_with_token.initiate_call(cfg)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_initiate_call_sends_x_stringee_auth_header(
     adapter_with_token: StringeeAdapter,
 ) -> None:

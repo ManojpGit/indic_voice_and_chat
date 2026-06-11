@@ -155,7 +155,14 @@ class StringeeAdapter(ITelephonyProvider):
                 headers=self._headers(),
                 json=body,
             )
-            resp.raise_for_status()
+            # Surface the response BODY on HTTP errors (e.g. a 403 carries
+            # Stringee's reason — invalid user, permission, region) instead of the
+            # bare httpx "403 Forbidden". ``raise_for_status`` hides the body.
+            if resp.status_code >= 400:
+                log.warning("stringee callout HTTP error",
+                            extra={"status": resp.status_code, "body": resp.text})
+                raise RuntimeError(
+                    f"Stringee callout HTTP {resp.status_code}: {resp.text}")
             payload = resp.json()
         # Stringee returns HTTP 200 even on logical errors — the real outcome is in
         # ``r`` (0 = accepted). Surface a non-zero ``r`` instead of silently
