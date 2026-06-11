@@ -60,6 +60,22 @@ async def test_initiate_call_returns_session_with_mapped_status(
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_initiate_call_raises_on_nonzero_r_code(
+    adapter_with_token: StringeeAdapter,
+) -> None:
+    """Stringee returns HTTP 200 with a non-zero ``r`` on logical errors (e.g. an
+    invalid FROM user). The adapter must surface it, not silently return empty."""
+    respx.post(f"{STRINGEE_BASE_URL}/v1/call2/callout").mock(
+        return_value=Response(200, json={"r": 10, "message": "FROM_USER_INVALID"}),
+    )
+    cfg = CallConfig(to_number="+919999", from_number="+918888",
+                     webhook_url="https://x", timeout_seconds=30)
+    with pytest.raises(RuntimeError, match="r=10"):
+        await adapter_with_token.initiate_call(cfg)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_initiate_call_sends_x_stringee_auth_header(
     adapter_with_token: StringeeAdapter,
 ) -> None:

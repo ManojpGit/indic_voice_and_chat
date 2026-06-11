@@ -26,6 +26,7 @@ Endpoint reference: https://developer.stringee.com/docs/api-reference
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import AsyncIterator
@@ -38,6 +39,8 @@ from src.interfaces.telephony import (
     CallSession,
     ITelephonyProvider,
 )
+
+log = logging.getLogger(__name__)
 
 STRINGEE_BASE_URL = "https://api.stringee.com"
 
@@ -142,6 +145,16 @@ class StringeeAdapter(ITelephonyProvider):
             )
             resp.raise_for_status()
             payload = resp.json()
+        # Stringee returns HTTP 200 even on logical errors — the real outcome is in
+        # ``r`` (0 = accepted). Surface a non-zero ``r`` instead of silently
+        # returning an empty call id, so the caller (and logs) see WHY it failed
+        # (e.g. invalid FROM user, number format, plan limits).
+        r_code = payload.get("r")
+        log.info("stringee callout response", extra={"r": r_code, "response": payload})
+        if r_code not in (0, None):
+            raise RuntimeError(
+                f"Stringee callout rejected (r={r_code}): "
+                f"{payload.get('message') or payload.get('msg') or payload}")
         call_id = payload.get("call_id") or payload.get("callId") or ""
         raw_status = (payload.get("status") or "STARTING").upper()
         return CallSession(
