@@ -30,6 +30,7 @@ def test_dev_voice_page_served():
 
 # --- place-call + status endpoints --------------------------------------------
 
+import src.api.dev_console as devmod
 from src.auth import register_tenant_for_test
 from src.auth.middleware import set_tenant_resolver
 from src.config_tenant import (
@@ -40,27 +41,25 @@ from src.config_tenant import (
 from src.interfaces.telephony import CallSession
 
 
-def _register_telephony_tenant(provider="twilio"):
+def _register_dev_tenant(provider="stringee", outbound_from=None):
     register_tenant_for_test(TenantSettings(
         id="t_dev", slug="dev", name="Dev",
         pipeline=TenantPipelineConfig(telephony=TenantTelephonyConfig(
-            provider=provider, from_number="+18888888888",
+            provider=provider, from_number="+918204268005",
             webhook_base_url="https://example.test/api/v1/telephony",
-            account_sid_env="X_SID", auth_token_env="X_TOK"))))
+            outbound_from=outbound_from or {}))))
 
 
-def _app_with_fake_providers(adapter):
-    class _FakeProviders:
-        def get_telephony(self, tenant):
-            return adapter
-
+def _client():
     app = FastAPI()
     app.include_router(dev_router)
-    app.state.providers = _FakeProviders()
-    return app
+    return TestClient(app)
 
 
-def test_place_call_initiates_sets_status_and_override():
+def test_place_call_uses_selected_provider_and_its_caller_id(monkeypatch):
+    """The dropdown drives the provider: even though the tenant's default is
+    stringee, selecting twilio builds the twilio adapter and dials from the
+    twilio caller-ID."""
     captured = {}
 
     class _FakeAdapter:
@@ -69,57 +68,70 @@ def test_place_call_initiates_sets_status_and_override():
             return CallSession(session_id="CA123", status="ringing",
                                to_number=cfg.to_number, from_number=cfg.from_number)
 
-    _register_telephony_tenant("twilio")
+    def _fake_build(cfg):
+        captured["provider"] = cfg["provider"]
+        return _FakeAdapter()
+
+    monkeypatch.setattr(devmod, "get_telephony_provider", _fake_build)
+    _register_dev_tenant(provider="stringee", outbound_from={"twilio": "+15705255679"})
     try:
-        client = TestClient(_app_with_fake_providers(_FakeAdapter()))
+        client = _client()
         resp = client.post("/dev/place-call", json={
             "provider": "twilio", "to_number": "+919999999999",
             "mode": "s2s", "voice": "Kore", "lead_name": "Raju"})
         assert resp.status_code == 200, resp.text
         assert resp.json()["call_sid"] == "CA123"
-
+        assert captured["provider"] == "twilio"             # selected provider's adapter
         cfg = captured["cfg"]
         assert cfg.to_number == "+919999999999"
-        assert cfg.from_number == "+18888888888"
+        assert cfg.from_number == "+15705255679"            # twilio caller-ID, not stringee's
         assert cfg.webhook_url == "https://example.test/api/v1/telephony/twilio/voice"
 
         from src.api import dev_call_control
         assert dev_call_control.monitor.get("CA123")["status"] == "calling"
-        # status poll endpoint reflects the monitor
         assert client.get("/dev/call-status/CA123").json()["status"] == "calling"
         assert client.get("/dev/call-status/NOPE").json()["status"] == "unknown"
-        # override stored for the bridge factory (one-shot)
-        ov = dev_call_control.pop_override("dev")
-        assert ov == {"mode": "s2s", "voice": "Kore", "lead_name": "Raju"}
+        assert dev_call_control.pop_override("dev") == {
+            "mode": "s2s", "voice": "Kore", "lead_name": "Raju"}
     finally:
         set_tenant_resolver(None)
 
 
-def test_place_call_rejects_provider_mismatch():
-    class _Adapter:
-        async def initiate_call(self, cfg):
-            raise AssertionError("should not be called")
+def test_place_call_no_caller_id_for_provider(monkeypatch):
+    def _no_build(cfg):
+        raise AssertionError("adapter should not be built without a caller-ID")
 
-    _register_telephony_tenant("twilio")          # tenant is twilio
+    monkeypatch.setattr(devmod, "get_telephony_provider", _no_build)
+    _register_dev_tenant(provider="stringee", outbound_from={"twilio": "+15705255679"})
     try:
-        client = TestClient(_app_with_fake_providers(_Adapter()))
-        resp = client.post("/dev/place-call", json={
-            "provider": "exotel", "to_number": "+919999999999"})   # asks for exotel
+        resp = _client().post("/dev/place-call", json={
+            "provider": "exotel", "to_number": "+919999999999"})  # no exotel caller-ID
         assert resp.status_code == 400
-        assert "twilio" in resp.json()["detail"]
+        assert "exotel" in resp.json()["detail"]
     finally:
         set_tenant_resolver(None)
 
 
-def test_place_call_failure_clears_override():
+def test_place_call_rejects_unsupported_provider():
+    _register_dev_tenant()
+    try:
+        resp = _client().post("/dev/place-call", json={
+            "provider": "stringee", "to_number": "+919999999999"})
+        assert resp.status_code == 400
+        assert "stringee" in resp.json()["detail"]
+    finally:
+        set_tenant_resolver(None)
+
+
+def test_place_call_failure_clears_override(monkeypatch):
     class _BoomAdapter:
         async def initiate_call(self, cfg):
             raise RuntimeError("twilio rejected")
 
-    _register_telephony_tenant("twilio")
+    monkeypatch.setattr(devmod, "get_telephony_provider", lambda cfg: _BoomAdapter())
+    _register_dev_tenant(provider="twilio", outbound_from={"twilio": "+15705255679"})
     try:
-        client = TestClient(_app_with_fake_providers(_BoomAdapter()))
-        resp = client.post("/dev/place-call", json={
+        resp = _client().post("/dev/place-call", json={
             "provider": "twilio", "to_number": "+919999999999", "mode": "s2s"})
         assert resp.status_code == 502
         from src.api import dev_call_control

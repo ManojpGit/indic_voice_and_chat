@@ -35,7 +35,7 @@ from src.interfaces.stt import STTConfig
 from src.interfaces.tts import TTSConfig
 from src.pipeline.engine import PipelineConfig, PipelineEngine
 from src.pipeline.vad import EnergyVAD, SileroVAD
-from src.providers import get_streaming_stt_provider
+from src.providers import get_streaming_stt_provider, get_telephony_provider
 
 log = logging.getLogger(__name__)
 
@@ -76,13 +76,18 @@ async def dev_voice_page() -> FileResponse:
 
 # --- Telephony control panel: place an outbound call + poll its status --------
 #
-# WebConsole runs in-browser (the WS routes above). Twilio/Exotel place a real
-# outbound call that runs the agent over the phone; the console shows the call's
-# lifecycle (calling -> answered -> ended) + outcome by polling the in-memory
-# call monitor that the telephony bridge writes to (keyed by the provider Call
-# SID). Mode/Voice for the placed call are threaded via a one-shot override the
-# bridge factory consumes. Requires the dev tenant to have that provider's creds
-# + from_number + webhook_base_url configured and a publicly reachable host.
+# WebConsole runs in-browser (the WS routes above). The Telephony dropdown picks
+# the provider; Twilio/Exotel place a real outbound call that runs the agent over
+# the phone, and the console polls the in-memory call monitor the bridge writes
+# to (keyed by the provider Call SID) for lifecycle (calling -> answered ->
+# ended) + outcome. Mode/Voice are threaded via a one-shot override the bridge
+# factory consumes. The selected provider's adapter is built on demand (creds
+# resolve from the provider's env vars); the caller-ID comes from
+# pipeline.telephony.outbound_from[provider]. Needs a publicly reachable host.
+
+# Providers that run over the S2S/cascade media-stream bridges (Stringee is a
+# separate turn-based IVR path, not placed from this panel).
+_PLACE_CALL_PROVIDERS = ("twilio", "exotel")
 
 
 class PlaceCallRequest(BaseModel):
@@ -95,7 +100,7 @@ class PlaceCallRequest(BaseModel):
 
 
 @dev_router.post("/dev/place-call")
-async def dev_place_call(req: PlaceCallRequest, request: Request) -> dict:
+async def dev_place_call(req: PlaceCallRequest) -> dict:
     from src.auth.middleware import tenant_from_slug
     from src.interfaces.telephony import CallConfig
 
@@ -108,37 +113,44 @@ async def dev_place_call(req: PlaceCallRequest, request: Request) -> dict:
 
     tel = tenant.settings.pipeline.telephony
     provider = req.provider.strip().lower()
-    if (tel.provider or "").lower() != provider:
+    if provider not in _PLACE_CALL_PROVIDERS:
         raise HTTPException(
             status_code=400,
-            detail=(f"dev tenant telephony provider is '{tel.provider}', not '{provider}'. "
-                    f"Set pipeline.telephony for '{provider}' in config/tenants/{req.tenant}.yaml."))
-    if not tel.from_number or not tel.webhook_base_url:
+            detail=f"provider '{provider}' can't be placed from here; use {list(_PLACE_CALL_PROVIDERS)}")
+    if not tel.webhook_base_url:
         raise HTTPException(
-            status_code=400,
-            detail="tenant telephony.from_number and webhook_base_url must be set to place a call")
+            status_code=400, detail="tenant telephony.webhook_base_url must be set to place a call")
 
-    providers = getattr(request.app.state, "providers", None)
-    if providers is None:
-        raise HTTPException(status_code=503, detail="provider registry not ready")
+    # The dropdown drives the provider — build *its* adapter (creds resolve from the
+    # provider's env vars) and dial from *its* configured caller-ID, independent of
+    # the tenant's default/inbound provider.
+    from_number = (tel.outbound_from or {}).get(provider)
+    if not from_number and (tel.provider or "").lower() == provider:
+        from_number = tel.from_number          # default block's number, if it matches
+    if not from_number:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"no caller-ID configured for '{provider}'. Set "
+                    f"pipeline.telephony.outbound_from.{provider} in config/tenants/{req.tenant}.yaml."))
+
     try:
-        adapter = providers.get_telephony(tenant)
-    except Exception as e:  # noqa: BLE001 - e.g. missing credentials
-        raise HTTPException(status_code=400, detail=f"telephony adapter unavailable: {e}")
+        adapter = get_telephony_provider({"provider": provider})
+    except Exception as e:  # noqa: BLE001 - e.g. missing credentials in env
+        raise HTTPException(status_code=400, detail=f"telephony adapter for '{provider}' unavailable: {e}")
 
     # Thread the console's Mode/Voice/lead to the call the bridge factory builds.
     dev_call_control.set_override(
         tenant.slug, mode=req.mode, voice=req.voice.strip(), lead_name=req.lead_name.strip())
     cfg = CallConfig(
         to_number=req.to_number.strip(),
-        from_number=tel.from_number,
+        from_number=from_number,
         webhook_url=f"{tel.webhook_base_url.rstrip('/')}/{provider}/voice",
     )
     try:
         session = await adapter.initiate_call(cfg)
     except Exception as e:  # noqa: BLE001 - don't leave a stale override on failure
         dev_call_control.pop_override(tenant.slug)
-        log.exception("dev place-call failed", extra={"tenant": tenant.slug})
+        log.exception("dev place-call failed", extra={"tenant": tenant.slug, "provider": provider})
         raise HTTPException(status_code=502, detail=f"call failed: {e}")
 
     dev_call_control.monitor.set_status(session.session_id, "calling")
