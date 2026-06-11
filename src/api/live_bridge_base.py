@@ -62,12 +62,17 @@ class _BaseLiveBridge:
         self._pending_action: str | None = None
         self._pending_slots: dict = {}
         self._speaking = False
+        # one-shot diagnostics: did the model ever HEAR the caller / RESPOND?
+        self._dbg_heard_caller = False
+        self._dbg_model_audio = False
 
     # --- run skeleton (shared) ------------------------------------------
     async def _drive(self) -> None:
         events_task = None
-        await self._agent.start()
         try:
+            # Inside the guard so a failure here (e.g. a store/Redis hiccup in
+            # agent.start) tears down cleanly instead of crashing the WS handler.
+            await self._agent.start()
             await self._on_start()
             self._session = await self._connect_session(self._config)
             events_task = asyncio.create_task(self._consume_events())
@@ -102,8 +107,15 @@ class _BaseLiveBridge:
         try:
             async for ev in self._session.events():
                 if ev.type == "audio":
+                    if not self._dbg_model_audio:
+                        self._dbg_model_audio = True
+                        log.info("live: model is producing audio (responding)")
                     await self._send_audio_out(ev.audio, ev.audio_rate)
                 elif ev.type == "input_transcript":
+                    if not self._dbg_heard_caller:
+                        self._dbg_heard_caller = True
+                        log.info("live: model heard the caller (input_transcript)",
+                                 extra={"first_text": ev.text[:60]})
                     self._user_buf += ev.text
                     await self._emit_transcript("user", self._user_buf, partial=True)
                 elif ev.type == "output_transcript":
@@ -144,6 +156,9 @@ class _BaseLiveBridge:
             await self._agent.apply_signal(
                 user_text=user, agent_text=agent, action=action,
                 updated_slots=self._pending_slots)
+            log.info("live turn committed", extra={
+                "user_chars": len(user), "agent_chars": len(agent), "action": action,
+                "user": user[:120], "agent": agent[:120]})
             self._last_action = action
         self._user_buf = ""
         self._agent_buf = ""
