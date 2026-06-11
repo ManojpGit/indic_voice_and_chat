@@ -96,7 +96,9 @@ async def test_initiate_call_body_shape(adapter_with_token: StringeeAdapter) -> 
     assert body["from"]["type"] == "internal"      # originating Stringee-side identity
     assert body["to"][0]["number"] == "919999"
     assert body["to"][0]["type"] == "external"     # real PSTN destination
-    assert body["answer_url"] == "https://x/answer"
+    # answer_url is configured on the Stringee dashboard, NOT sent in the payload.
+    assert "answer_url" not in body
+    assert "actions" not in body
 
 
 @pytest.mark.asyncio
