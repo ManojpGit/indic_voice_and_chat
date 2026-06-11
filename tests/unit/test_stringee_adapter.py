@@ -209,6 +209,21 @@ async def test_jwt_is_minted_when_no_token_override(adapter: StringeeAdapter) ->
 
 
 @pytest.mark.asyncio
+async def test_jwt_uses_icc_api_and_userid_when_user_id_set() -> None:
+    """With a user id configured, the token carries userId + icc_api: true (the
+    Stringee CALL/ICC API form) instead of rest_api — matching a working callout
+    integration's token."""
+    import jwt
+    a = StringeeAdapter({"api_key_sid": "test-sid", "api_key_secret": "test-secret",
+                         "user_id": "ab858a8c7ad447d2a0b705ee93f8f134"})
+    decoded = jwt.decode(a._make_access_token(), "test-secret", algorithms=["HS256"])
+    assert decoded["userId"] == "ab858a8c7ad447d2a0b705ee93f8f134"
+    assert decoded["icc_api"] is True
+    assert "rest_api" not in decoded
+    assert decoded["iss"] == "test-sid"
+
+
+@pytest.mark.asyncio
 async def test_jwt_header_includes_stringee_cty(adapter: StringeeAdapter) -> None:
     """Stringee's REST API requires the JWT header to carry
     ``cty: stringee-api;v=1``. Without it the live API rejects the token with

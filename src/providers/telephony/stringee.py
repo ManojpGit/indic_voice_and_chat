@@ -84,6 +84,11 @@ class StringeeAdapter(ITelephonyProvider):
             or STRINGEE_BASE_URL
         ).rstrip("/")
         self._timeout = config.get("timeout", 30.0)
+        # The Stringee CALL (ICC) API wants a token carrying a ``userId`` +
+        # ``icc_api: true`` (a registered Stringee user), not the generic
+        # ``rest_api`` token. Set STRINGEE_USER_ID to the project's user id to mint
+        # that form (matches a known-working callout integration).
+        self._user_id: str | None = config.get("user_id") or os.environ.get("STRINGEE_USER_ID")
         # Tests can inject a pre-built bearer; otherwise we mint a fresh JWT.
         self._token_override: str | None = config.get("access_token")
 
@@ -102,8 +107,14 @@ class StringeeAdapter(ITelephonyProvider):
             "jti": f"{self._api_key_sid}-{now}",
             "iss": self._api_key_sid,
             "exp": now + ttl_seconds,
-            "rest_api": True,
         }
+        # ICC (call) API token: userId + icc_api (what the callout needs). Falls
+        # back to the generic rest_api token when no user id is configured.
+        if self._user_id:
+            payload["userId"] = self._user_id
+            payload["icc_api"] = True
+        else:
+            payload["rest_api"] = True
         return jwt.encode(
             payload,
             self._api_key_secret,
