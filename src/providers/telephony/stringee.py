@@ -128,18 +128,19 @@ class StringeeAdapter(ITelephonyProvider):
         returns an SCC (Stringee Call Control) script when the destination
         picks up — equivalent to TwiML.
         """
-        # ``to`` is the real PSTN destination -> "external", BARE digits (Stringee
-        # rejects '+E.164' as r:10 FROM/TO_NUMBER_INVALID_FORMAT).
         # Both legs are ``external`` PSTN numbers, BARE digits (Stringee rejects
-        # '+E.164' as r:10). ``from`` is the project's DID/caller-ID. We send NO
-        # ``answer_url`` and NO ``actions`` — Stringee uses the project-configured
-        # Answer URL for the SCCO (a present ``actions``, even [], makes Stringee
-        # skip the Answer URL). Matches a known-working Stringee integration.
+        # '+E.164' as r:10). ``from`` is the project's DID/caller-ID.
         from_number = _bare_number(config.from_number)
         to_number = _bare_number(config.to_number)
+        # Send OUR ``answer_url`` in the callout so Stringee fetches OUR SCCO on
+        # pickup — this overrides the project's dashboard Answer URL (important when
+        # the project belongs to someone else). NO ``actions`` (even [] makes
+        # Stringee skip the answer_url). Our routes accept GET+POST so the fetch
+        # succeeds.
         body: dict[str, Any] = {
             "from": {"type": "external", "number": from_number, "alias": from_number},
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
+            "answer_url": config.webhook_url,
         }
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(

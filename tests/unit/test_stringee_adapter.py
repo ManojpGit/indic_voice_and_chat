@@ -127,8 +127,9 @@ async def test_initiate_call_body_shape(adapter_with_token: StringeeAdapter) -> 
     assert body["from"]["alias"] == "918888"
     assert body["to"][0]["type"] == "external"
     assert body["to"][0]["number"] == "919999"
-    # answer_url is configured on the Stringee dashboard, NOT sent in the payload.
-    assert "answer_url" not in body
+    # OUR answer_url is sent in the payload (overrides the project dashboard URL);
+    # no inline `actions` (which would make Stringee skip the answer_url).
+    assert body["answer_url"] == "https://x/answer"
     assert "actions" not in body
 
 
