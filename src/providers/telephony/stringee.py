@@ -84,6 +84,12 @@ class StringeeAdapter(ITelephonyProvider):
             or STRINGEE_BASE_URL
         ).rstrip("/")
         self._timeout = config.get("timeout", 30.0)
+        # A callout placed with a token carrying a ``userId`` is treated by Stringee
+        # as an INTERNAL-user call (``fromInternal=true``) — which is what makes
+        # Stringee fetch the Answer URL + run the SCCO (an external/userId-null
+        # callout does NOT). Set STRINGEE_USER_ID to the project's registered user
+        # id. Without it, falls back to the rest_api token (external call).
+        self._user_id: str | None = config.get("user_id") or os.environ.get("STRINGEE_USER_ID")
         # Tests can inject a pre-built bearer; otherwise we mint a fresh JWT.
         self._token_override: str | None = config.get("access_token")
 
@@ -98,15 +104,20 @@ class StringeeAdapter(ITelephonyProvider):
         import jwt  # PyJWT — already pulled in transitively by Twilio SDK
 
         now = int(time.time())
-        # The callout REST endpoint requires ``rest_api: true`` — Stringee rejects a
-        # token without it as ``r:45`` ("access_token must have rest_api ... true").
-        # (A userId/icc_api token is the SDK *client* token, not the callout token.)
         payload = {
             "jti": f"{self._api_key_sid}-{now}",
             "iss": self._api_key_sid,
             "exp": now + ttl_seconds,
-            "rest_api": True,
         }
+        # With a user id -> the ICC/call token (userId + icc_api) that makes the
+        # callout an INTERNAL-user call so Stringee runs the Answer URL SCCO. This
+        # is the proven-working form (Stringee debug: fromInternal=true). Without a
+        # user id -> the generic rest_api token (external call; Answer URL skipped).
+        if self._user_id:
+            payload["userId"] = self._user_id
+            payload["icc_api"] = True
+        else:
+            payload["rest_api"] = True
         return jwt.encode(
             payload,
             self._api_key_secret,
