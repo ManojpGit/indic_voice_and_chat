@@ -55,6 +55,8 @@ class TelephonyLiveBridge(_BaseLiveBridge):
         self._audio_q: asyncio.Queue[bytes] = asyncio.Queue()
         self._sender_task: asyncio.Task | None = None
         self._play_deadline = 0.0
+        self._in_frames = 0          # caller media frames forwarded to the model
+        self._out_frames = 0         # model media frames queued for the caller
 
     async def run(self) -> None:
         await self._drive()
@@ -115,12 +117,18 @@ class TelephonyLiveBridge(_BaseLiveBridge):
         pcm8k = mulaw_to_pcm16(raw) if self._encoding == "mulaw" else raw
         pcm16k, self._up_state = resample_pcm16(pcm8k, _TEL_RATE, 16000, self._up_state)
         await self._session.send_audio(pcm16k)   # caller audio -> model
+        self._in_frames += 1
+        if self._in_frames % 250 == 0:           # ~every 5s of caller audio
+            log.info("telephony caller audio -> model", extra={"in_frames": self._in_frames})
 
     async def _send_audio_out(self, pcm16: bytes, rate: int) -> None:
         # Enqueue; the sender task paces it out (never blocks the events loop).
         if pcm16 and self._stream_sid is not None:
             pcm8k, self._down_state = resample_pcm16(pcm16, rate, _TEL_RATE, self._down_state)
             self._audio_q.put_nowait(pcm8k)
+            self._out_frames += 1
+            if self._out_frames % 50 == 1:       # first chunk, then ~periodic
+                log.info("telephony model audio -> caller", extra={"out_frames": self._out_frames})
 
     async def _send_interrupt(self) -> None:
         # Barge-in: drop queued+playing agent audio and reset pacing.

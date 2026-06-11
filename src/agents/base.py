@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -9,6 +10,8 @@ from src.agents.state_machine import AgentStateMachine
 from src.dialogue.context import SessionStore
 from src.dialogue.slots import SlotFiller
 from src.interfaces.llm import LLMMessage
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -45,10 +48,15 @@ class BaseAgent:
     async def persist_turn(self, role: str, content: str, metadata: Optional[dict] = None) -> None:
         if self.store is None:
             return
-        await self.store.append_history(
-            self.session.session_id,
-            {"role": role, "content": content, "metadata": metadata or {}},
-        )
+        # Best-effort: a slow/dead store (e.g. Redis outage) must not drop a live
+        # call — degrade to no-persistence rather than crashing the bridge.
+        try:
+            await self.store.append_history(
+                self.session.session_id,
+                {"role": role, "content": content, "metadata": metadata or {}},
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("persist_turn failed; continuing without persistence", exc_info=True)
 
     async def persist_state(self, extra: Optional[dict] = None) -> None:
         if self.store is None:
@@ -59,4 +67,7 @@ class BaseAgent:
         }
         if extra:
             payload.update(extra)
-        await self.store.set_state(self.session.session_id, payload)
+        try:
+            await self.store.set_state(self.session.session_id, payload)
+        except Exception:  # noqa: BLE001
+            log.warning("persist_state failed; continuing without persistence", exc_info=True)
