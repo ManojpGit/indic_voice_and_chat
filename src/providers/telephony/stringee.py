@@ -142,6 +142,12 @@ class StringeeAdapter(ITelephonyProvider):
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
             "answer_url": config.webhook_url,
         }
+        # Log WHICH project (keySid=iss) + region (base) is authenticating, so a
+        # FROM_NUMBER_NOT_BELONG_YOUR_PROJECT (r:15) is easy to diagnose: the
+        # number is fine, the keys/region just don't own it.
+        log.info("stringee callout", extra={
+            "iss": self._api_key_sid, "base": self._base_url,
+            "from": from_number, "to": to_number})
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(
                 f"{self._base_url}/v1/call2/callout",
