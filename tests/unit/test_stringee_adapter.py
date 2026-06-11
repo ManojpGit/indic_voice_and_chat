@@ -121,11 +121,9 @@ async def test_initiate_call_body_shape(adapter_with_token: StringeeAdapter) -> 
     )
     await adapter_with_token.initiate_call(cfg)
     body = json.loads(route.calls.last.request.content.decode())
-    # `from.type` is internal (the working call's from leg is internal); `to` is the
-    # external PSTN destination. BARE digits ('+' stripped).
-    assert body["from"]["type"] == "internal"
+    # No user id configured -> from falls back to the external DID. BARE digits.
+    assert body["from"]["type"] == "external"
     assert body["from"]["number"] == "918888"
-    assert body["from"]["alias"] == "918888"
     assert body["to"][0]["type"] == "external"
     assert body["to"][0]["number"] == "919999"
     # OUR answer_url is sent in the payload (overrides the project dashboard URL);
@@ -147,6 +145,9 @@ async def test_initiate_call_includes_userid_in_body_when_set() -> None:
                                      webhook_url="https://x/answer", timeout_seconds=30))
     body = json.loads(route.calls.last.request.content.decode())
     assert body["userId"] == "ab858a8c7ad447d2a0b705ee93f8f134"
+    # from IS the internal user (userId as the number), not the DID
+    assert body["from"]["type"] == "internal"
+    assert body["from"]["number"] == "ab858a8c7ad447d2a0b705ee93f8f134"
 
 
 @pytest.mark.asyncio
