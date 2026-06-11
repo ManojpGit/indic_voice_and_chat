@@ -21,6 +21,7 @@ import json
 import logging
 import time
 
+from src.api import dev_call_control
 from src.api.live_bridge_base import _BaseLiveBridge
 from src.interfaces.realtime import RealtimeConfig
 from src.pipeline.audio_utils import mulaw_to_pcm16, pcm16_to_mulaw, resample_pcm16
@@ -39,14 +40,16 @@ class TelephonyLiveBridge(_BaseLiveBridge):
     def __init__(self, *, websocket, agent, config: RealtimeConfig, connect_session,
                  llm=None, tenant_timezone: str = "Asia/Kolkata",
                  encoding: str = "mulaw", sid_field: str = "streamSid",
-                 supports_clear: bool = True) -> None:
+                 supports_clear: bool = True, call_sid_field: str = "callSid") -> None:
         super().__init__(agent=agent, config=config, connect_session=connect_session,
                          llm=llm, tenant_timezone=tenant_timezone)
         self._ws = websocket
         self._encoding = encoding
         self._sid_field = sid_field
         self._supports_clear = supports_clear
+        self._call_sid_field = call_sid_field   # Twilio: "callSid" / Exotel: "call_sid"
         self._stream_sid: str | None = None
+        self._call_sid: str | None = None        # provider Call SID (dev-console monitor key)
         self._up_state = None        # 8k->16k resample state (inbound)
         self._down_state = None      # 24k->8k resample state (outbound)
         self._audio_q: asyncio.Queue[bytes] = asyncio.Queue()
@@ -67,6 +70,13 @@ class TelephonyLiveBridge(_BaseLiveBridge):
                 await self._sender_task
             except BaseException:  # noqa: BLE001
                 pass
+        if self._call_sid is not None:
+            dev_call_control.monitor.set_status(self._call_sid, "ended")
+
+    async def _deliver_outcome(self, payload: dict) -> None:
+        # Publish to the dev-console call monitor so a placed call shows its outcome.
+        if self._call_sid is not None:
+            dev_call_control.monitor.set_outcome(self._call_sid, payload)
 
     async def _inbound_loop(self) -> None:
         from starlette.websockets import WebSocketDisconnect
@@ -80,7 +90,12 @@ class TelephonyLiveBridge(_BaseLiveBridge):
                 if event == "start":
                     start = msg.get("start", {}) or {}
                     self._stream_sid = start.get(self._sid_field) or msg.get(self._sid_field)
-                    log.info("telephony stream started", extra={"sid": self._stream_sid})
+                    self._call_sid = (start.get(self._call_sid_field)
+                                      or msg.get(self._call_sid_field))
+                    log.info("telephony stream started",
+                             extra={"sid": self._stream_sid, "call_sid": self._call_sid})
+                    if self._call_sid is not None:
+                        dev_call_control.monitor.set_status(self._call_sid, "answered")
                 elif event == "media":
                     await self._on_media(msg.get("media") or {})
                 elif event == "stop":

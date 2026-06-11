@@ -138,6 +138,60 @@ async def test_exotel_interrupt_no_clear():
     assert not any(m.get("event") == "clear" for m in _media(b._ws.sent_text))
 
 
+def _one_frame_then_disconnect(frame: dict):
+    """A fake receive_text that yields one frame then ends the WS (caller hangs up)."""
+    from starlette.websockets import WebSocketDisconnect
+
+    state = {"n": 0}
+
+    async def _receive():
+        state["n"] += 1
+        if state["n"] == 1:
+            return json.dumps(frame)
+        raise WebSocketDisconnect()
+
+    return _receive
+
+
+@pytest.mark.asyncio
+async def test_start_event_captures_call_sid_and_marks_answered():
+    from src.api import dev_call_control
+
+    b, _, _ = _bridge("mulaw")
+    b._ws.receive_text = _one_frame_then_disconnect(
+        {"event": "start", "start": {"streamSid": "S1", "callSid": "CAabc"}})
+    await b._inbound_loop()
+    assert b._call_sid == "CAabc"
+    assert dev_call_control.monitor.get("CAabc")["status"] == "answered"
+
+
+@pytest.mark.asyncio
+async def test_teardown_and_outcome_publish_to_monitor():
+    from src.api import dev_call_control
+
+    b, _, _ = _bridge("mulaw")
+    b._call_sid = "CAxyz"
+    await b._on_teardown()
+    assert dev_call_control.monitor.get("CAxyz")["status"] == "ended"
+    await b._deliver_outcome({"outcome": "interested", "summary": "s"})
+    got = dev_call_control.monitor.get("CAxyz")
+    assert got["status"] == "ended"
+    assert got["outcome"]["outcome"] == "interested"
+
+
+@pytest.mark.asyncio
+async def test_exotel_start_reads_snake_case_call_sid():
+    from src.api import dev_call_control
+
+    b, _, _ = _bridge("pcm")
+    b._call_sid_field = "call_sid"    # Exotel uses snake_case
+    b._ws.receive_text = _one_frame_then_disconnect(
+        {"event": "start", "stream_sid": "S2", "call_sid": "EXcall"})
+    await b._inbound_loop()
+    assert b._call_sid == "EXcall"
+    assert dev_call_control.monitor.get("EXcall")["status"] == "answered"
+
+
 @pytest.mark.asyncio
 async def test_consume_events_commits_turn_and_slots():
     events = [
@@ -186,3 +240,52 @@ def test_bootstrap_builds_s2s_telephony_bridge():
     assert bridge._encoding == "mulaw" and bridge._sid_field == "streamSid"
     assert bridge._config.model == "gemini-3.1-flash-live-preview"
     assert "record_turn_signal" in bridge._config.tools[0].name
+
+
+def test_build_s2s_telephony_bridge_applies_voice_and_lead_override():
+    """A dev-console override threads voice + lead_name + the provider's
+    call_sid field into the S2S telephony bridge."""
+    from types import SimpleNamespace
+
+    from src.bootstrap import _build_s2s_telephony_bridge
+
+    rt = SimpleNamespace(model="m", voice="Aoede", language_code="hi-IN",
+                         api_key_env="K", allowed_voices=["Aoede", "Kore", "Leda"])
+    tenant = SimpleNamespace(
+        id="t1", slug="dev",
+        settings=SimpleNamespace(pipeline=SimpleNamespace(mode="s2s", realtime=rt),
+                                 timezone="Asia/Kolkata"),
+        secret=lambda env: "fake-key")
+    providers = SimpleNamespace(get_stt=lambda t: None, get_llm=lambda t: object(),
+                                get_tts=lambda t: None)
+
+    bridge = _build_s2s_telephony_bridge(
+        providers, tenant, VoiceBotScript(agent_name="A", agent_role="s", company_name="X"),
+        SlotSchema(), websocket=object(), session_store=None,
+        encoding="pcm", sid_field="stream_sid", supports_clear=False,
+        call_sid_field="call_sid", voice_override="Kore", lead_data={"lead_name": "Raju"})
+    assert bridge._config.voice == "Kore"          # override applied + allowed
+    assert bridge._call_sid_field == "call_sid"
+    assert bridge._agent.session.lead_data.get("lead_name") == "Raju"
+
+
+def test_build_s2s_telephony_bridge_rejects_disallowed_voice():
+    from types import SimpleNamespace
+
+    from src.bootstrap import _build_s2s_telephony_bridge
+
+    rt = SimpleNamespace(model="m", voice="Aoede", language_code="hi-IN",
+                         api_key_env="K", allowed_voices=["Aoede", "Kore"])
+    tenant = SimpleNamespace(
+        id="t1", slug="dev",
+        settings=SimpleNamespace(pipeline=SimpleNamespace(mode="s2s", realtime=rt),
+                                 timezone="Asia/Kolkata"),
+        secret=lambda env: "k")
+    providers = SimpleNamespace(get_stt=lambda t: None, get_llm=lambda t: object(),
+                                get_tts=lambda t: None)
+    bridge = _build_s2s_telephony_bridge(
+        providers, tenant, VoiceBotScript(agent_name="A", agent_role="s", company_name="X"),
+        SlotSchema(), websocket=object(), session_store=None,
+        encoding="mulaw", sid_field="streamSid", supports_clear=True,
+        voice_override="Charon")                   # not in allowed_voices
+    assert bridge._config.voice == "Aoede"         # falls back to config default

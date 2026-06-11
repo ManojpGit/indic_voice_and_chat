@@ -14,8 +14,9 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from src.agents.base import AgentSession
 from src.agents.state_machine import AgentStateMachine
@@ -71,6 +72,89 @@ def set_live_bridge_factory(factory: Optional[LiveBridgeFactory]) -> None:
 @dev_router.get("/dev/voice")
 async def dev_voice_page() -> FileResponse:
     return FileResponse(_STATIC / "dev_console.html", media_type="text/html")
+
+
+# --- Telephony control panel: place an outbound call + poll its status --------
+#
+# WebConsole runs in-browser (the WS routes above). Twilio/Exotel place a real
+# outbound call that runs the agent over the phone; the console shows the call's
+# lifecycle (calling -> answered -> ended) + outcome by polling the in-memory
+# call monitor that the telephony bridge writes to (keyed by the provider Call
+# SID). Mode/Voice for the placed call are threaded via a one-shot override the
+# bridge factory consumes. Requires the dev tenant to have that provider's creds
+# + from_number + webhook_base_url configured and a publicly reachable host.
+
+
+class PlaceCallRequest(BaseModel):
+    provider: str               # "twilio" | "exotel"
+    to_number: str
+    mode: str = "s2s"           # "s2s" | "layered" — drives the placed call
+    voice: str = ""             # S2S voice; "" -> tenant default
+    lead_name: str = ""
+    tenant: str = "dev"
+
+
+@dev_router.post("/dev/place-call")
+async def dev_place_call(req: PlaceCallRequest, request: Request) -> dict:
+    from src.auth.middleware import tenant_from_slug
+    from src.interfaces.telephony import CallConfig
+
+    from src.api import dev_call_control
+
+    try:
+        tenant = await tenant_from_slug(req.tenant)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail=f"unknown tenant: {e}")
+
+    tel = tenant.settings.pipeline.telephony
+    provider = req.provider.strip().lower()
+    if (tel.provider or "").lower() != provider:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"dev tenant telephony provider is '{tel.provider}', not '{provider}'. "
+                    f"Set pipeline.telephony for '{provider}' in config/tenants/{req.tenant}.yaml."))
+    if not tel.from_number or not tel.webhook_base_url:
+        raise HTTPException(
+            status_code=400,
+            detail="tenant telephony.from_number and webhook_base_url must be set to place a call")
+
+    providers = getattr(request.app.state, "providers", None)
+    if providers is None:
+        raise HTTPException(status_code=503, detail="provider registry not ready")
+    try:
+        adapter = providers.get_telephony(tenant)
+    except Exception as e:  # noqa: BLE001 - e.g. missing credentials
+        raise HTTPException(status_code=400, detail=f"telephony adapter unavailable: {e}")
+
+    # Thread the console's Mode/Voice/lead to the call the bridge factory builds.
+    dev_call_control.set_override(
+        tenant.slug, mode=req.mode, voice=req.voice.strip(), lead_name=req.lead_name.strip())
+    cfg = CallConfig(
+        to_number=req.to_number.strip(),
+        from_number=tel.from_number,
+        webhook_url=f"{tel.webhook_base_url.rstrip('/')}/{provider}/voice",
+    )
+    try:
+        session = await adapter.initiate_call(cfg)
+    except Exception as e:  # noqa: BLE001 - don't leave a stale override on failure
+        dev_call_control.pop_override(tenant.slug)
+        log.exception("dev place-call failed", extra={"tenant": tenant.slug})
+        raise HTTPException(status_code=502, detail=f"call failed: {e}")
+
+    dev_call_control.monitor.set_status(session.session_id, "calling")
+    log.info("dev console placed call", extra={
+        "tenant": tenant.slug, "provider": provider, "call_sid": session.session_id})
+    return {"call_sid": session.session_id, "status": "calling"}
+
+
+@dev_router.get("/dev/call-status/{call_sid}")
+async def dev_call_status(call_sid: str) -> dict:
+    from src.api import dev_call_control
+
+    item = dev_call_control.monitor.get(call_sid)
+    if item is None:
+        return {"status": "unknown", "outcome": None}
+    return item
 
 
 @ws_router.websocket("/voice")
