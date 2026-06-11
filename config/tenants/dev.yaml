@@ -99,13 +99,19 @@ pipeline:
 
   telephony:
     provider: stringee
-    from_number: "+918204268005"   # Stringee caller-ID
+    from_number: "+918204268005"   # Stringee caller-ID (default/inbound provider)
     webhook_base_url: "https://p01--voice-bot--9f4wlvz8tgw7.code.run/api/v1/telephony"
     # Stringee auth is read from env STRINGEE_API_KEY_SID / STRINGEE_API_KEY_SECRET
     # by the adapter directly; the *_env fields below are Twilio-shaped and unused
     # for stringee (kept so flipping back to Twilio only needs the provider line).
     account_sid_env: TENANT_DEV_TWILIO_SID
     auth_token_env: TENANT_DEV_TWILIO_TOKEN
+    # Dev-console "place call" caller-IDs per provider — the Telephony dropdown
+    # builds the selected provider's adapter (creds from TWILIO_* / EXOTEL_* env)
+    # and dials FROM the matching owned number below.
+    outbound_from:
+      twilio: "+15705255679"       # Twilio-owned number (also in phone_numbers)
+      # exotel: "+91XXXXXXXXXX"     # set your Exotel ExoPhone to place Exotel calls
 
   vector_store:
     provider: faiss

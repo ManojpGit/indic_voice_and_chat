@@ -129,6 +129,10 @@ class TenantTelephonyConfig(BaseModel):
     webhook_base_url: Optional[str] = None
     account_sid_env: Optional[str] = None
     auth_token_env: Optional[str] = None
+    # Per-provider caller-IDs for the dev-console "place call" panel. The Telephony
+    # dropdown picks the provider; this maps provider -> the number to dial *from*
+    # (each provider needs its own owned number). e.g. {"twilio": "+1...", "exotel": "+91..."}.
+    outbound_from: dict[str, str] = Field(default_factory=dict)
 
 
 class TenantVectorStoreConfig(BaseModel):
