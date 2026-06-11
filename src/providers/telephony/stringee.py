@@ -127,16 +127,14 @@ class StringeeAdapter(ITelephonyProvider):
         # here so callers/config can keep the '+E.164' form.
         from_number = _bare_number(config.from_number)
         to_number = _bare_number(config.to_number)
-        # NOTE: do NOT send ``actions`` (not even an empty list) alongside
-        # ``answer_url`` — Stringee treats a present ``actions`` as the SCCO and
-        # never GETs the answer_url, so the IVR is never invoked.
+        # Per Stringee support: the answer_url is NOT sent in the callout payload —
+        # it's configured on the Stringee project/dashboard. We also send no inline
+        # ``actions``. The callout body carries only the call legs.
+        # ``from`` is the originating Stringee-side identity -> type "internal";
+        # ``to`` is the real PSTN destination -> "external".
         body: dict[str, Any] = {
-            # ``from`` is the originating Stringee-side identity for the outbound
-            # callout (per Stringee support) -> type "internal"; ``to`` is the real
-            # PSTN destination -> "external".
             "from": {"type": "internal", "number": from_number, "alias": from_number},
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
-            "answer_url": config.webhook_url,
         }
         async with httpx.AsyncClient(timeout=self._timeout) as client:
             resp = await client.post(

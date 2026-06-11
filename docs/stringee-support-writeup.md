@@ -25,15 +25,15 @@ Headers:
 Body:
 {
   "from": { "type": "internal", "number": "918204268005", "alias": "918204268005" },
-  "to":   [ { "type": "external", "number": "918618795697", "alias": "918618795697" } ],
-  "answer_url": "https://p01--voice-bot--9f4wlvz8tgw7.code.run/api/v1/telephony/stringee/answer"
+  "to":   [ { "type": "external", "number": "918618795697", "alias": "918618795697" } ]
 }
 ```
 
 Notes:
 - Numbers are **bare digits** (no leading `+`) — `+E.164` is rejected as
   `r:10 FROM/TO_NUMBER_INVALID_FORMAT`.
-- We send **no `actions`** field (we rely entirely on `answer_url` for the SCCO).
+- We send **no `actions`** and **no `answer_url`** in the payload — the `answer_url`
+  is configured on the Stringee **project/dashboard** (`.../api/v1/telephony/stringee/answer`).
 
 **Response (success):** HTTP 200, e.g.
 `{"r": 0, "call_id": "call-vn-1-FCHPTIPCL5-178101974345...", ...}`
