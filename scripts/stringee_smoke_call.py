@@ -66,13 +66,18 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     _load_dotenv()
 
-    from src.providers.telephony.stringee import StringeeAdapter
+    from src.providers.telephony.stringee import StringeeAdapter, _bare_number
 
     try:
         adapter = StringeeAdapter({"provider": "stringee"})  # env-fallback auth
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+
+    # Stringee rejects a leading '+' (r:10) — send BARE digits regardless of how
+    # the caller passed --from/--to.
+    args.from_number = _bare_number(args.from_number)
+    args.to_number = _bare_number(args.to_number)
 
     body: dict = {
         "from": {"type": "external", "number": args.from_number, "alias": args.from_number},
