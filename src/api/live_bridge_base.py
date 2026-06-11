@@ -1,0 +1,208 @@
+"""Transport-agnostic core for speech-to-speech (Gemini Live) bridges.
+
+The dialogue logic — drive a Live session, map its events to audio out +
+transcripts + a ``record_turn_signal`` tool-call (→ ``apply_signal``) + native
+interruption + per-turn commit + post-call outcome — is identical whether the
+transport is the browser dev console or a telephony media stream. Subclasses
+supply only the transport: ``_inbound_loop`` (read caller audio → the model),
+``_send_audio_out`` (model audio → the wire), ``_send_interrupt`` (flush
+playback), and optionally ``_on_start`` / ``_emit_status`` / ``_emit_transcript``
+/ ``_deliver_outcome``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import UTC, datetime
+
+from src.agents.state_machine import Event, State
+from src.analysis.call_outcome import analyze_call
+from src.interfaces.llm import LLMMessage
+from src.interfaces.realtime import IRealtimeSession, RealtimeConfig, RealtimeTool
+
+log = logging.getLogger(__name__)
+
+# The dialogue-control tool the S2S model calls alongside its audio (consumed by
+# VoiceBotAgent.apply_signal — the same action/slots the cascade parses from JSON).
+RECORD_TURN_SIGNAL = RealtimeTool(
+    name="record_turn_signal",
+    description="Record the dialogue action and any slot values learned this turn.",
+    parameters={
+        "type": "OBJECT",
+        "properties": {
+            "action": {"type": "STRING", "enum": [
+                "continue", "clarify", "transfer", "schedule_callback",
+                "send_info", "close_positive", "close_negative", "end"]},
+            "updated_slots": {"type": "OBJECT"},
+        },
+        "required": ["action"],
+    },
+)
+
+
+class _BaseLiveBridge:
+    """Drive a Live session for one call. Subclass and implement the transport."""
+
+    def __init__(self, *, agent, config: RealtimeConfig, connect_session,
+                 llm=None, tenant_timezone: str = "Asia/Kolkata") -> None:
+        self._agent = agent
+        self._config = config
+        self._connect_session = connect_session
+        self._llm = llm
+        self._tenant_timezone = tenant_timezone
+
+        self._session: IRealtimeSession | None = None
+        self._stopped = False
+        self._outcome_emitted = False
+        self._last_action: str | None = None
+        # per-turn accumulators
+        self._user_buf = ""
+        self._agent_buf = ""
+        self._pending_action: str | None = None
+        self._pending_slots: dict = {}
+        self._speaking = False
+
+    # --- run skeleton (shared) ------------------------------------------
+    async def _drive(self) -> None:
+        events_task = None
+        await self._agent.start()
+        try:
+            await self._on_start()
+            self._session = await self._connect_session(self._config)
+            events_task = asyncio.create_task(self._consume_events())
+            await self._emit_status("listening")
+            await self._inbound_loop()
+        except Exception:  # noqa: BLE001 - never crash the socket handler
+            log.exception("live bridge crashed")
+        finally:
+            if events_task is not None:
+                events_task.cancel()
+                try:
+                    await events_task
+                except BaseException:  # noqa: BLE001
+                    pass
+            if self._session is not None:
+                await self._session.aclose()
+            await self._on_teardown()
+            # Salvage an in-progress turn (call ended mid-reply) so the transcript
+            # + outcome aren't lost.
+            try:
+                if ((self._user_buf.strip() or self._agent_buf.strip())
+                        and not getattr(self._agent.state, "is_terminal", False)):
+                    await self._commit_turn()
+            except Exception:  # noqa: BLE001 - never let salvage break teardown
+                log.exception("turn salvage on teardown failed")
+            await self._emit_outcome()
+            await self._agent.handle_hangup()
+
+    # --- model event handling (shared) ----------------------------------
+    async def _consume_events(self) -> None:
+        assert self._session is not None
+        try:
+            async for ev in self._session.events():
+                if ev.type == "audio":
+                    await self._send_audio_out(ev.audio, ev.audio_rate)
+                elif ev.type == "input_transcript":
+                    self._user_buf += ev.text
+                    await self._emit_transcript("user", self._user_buf, partial=True)
+                elif ev.type == "output_transcript":
+                    self._agent_buf += ev.text
+                    await self._emit_transcript("agent", self._agent_buf, partial=True)
+                elif ev.type == "tool_call":
+                    if ev.tool_name == "record_turn_signal":
+                        self._pending_action = ev.tool_args.get("action") or self._pending_action
+                        self._pending_slots.update(ev.tool_args.get("updated_slots") or {})
+                    await self._session.send_tool_response(
+                        tool_id=ev.tool_id, name=ev.tool_name, response={"ok": True})
+                elif ev.type == "interrupted":
+                    self._speaking = False
+                    await self._send_interrupt()
+                elif ev.type == "turn_complete":
+                    await self._commit_turn()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a model/stream error ends the call, not crash
+            log.exception("live event stream ended")
+            self._stopped = True
+
+    async def _commit_turn(self) -> None:
+        """Record the completed turn (transcript + slots) and advance state."""
+        if getattr(self._agent.state, "is_terminal", False):
+            return
+        user = self._user_buf.strip()
+        agent = self._agent_buf.strip()
+        action = self._pending_action or "continue"
+        if user or agent:
+            if user:
+                await self._emit_transcript("user", user, partial=False)
+            if agent:
+                await self._emit_transcript("agent", agent, partial=False)
+            # Drive LISTENING->PROCESSING so apply_signal's transitions are valid.
+            if self._agent.state.state is State.LISTENING:
+                await self._agent.state.fire(Event.UTTERANCE_COMPLETE)
+            await self._agent.apply_signal(
+                user_text=user, agent_text=agent, action=action,
+                updated_slots=self._pending_slots)
+            self._last_action = action
+        self._user_buf = ""
+        self._agent_buf = ""
+        self._pending_action = None
+        self._pending_slots = {}
+        self._speaking = False
+        if getattr(self._agent.state, "is_terminal", False):
+            self._stopped = True
+            await self._emit_outcome()
+        else:
+            await self._emit_status("listening")
+
+    async def _emit_outcome(self) -> None:
+        if self._outcome_emitted or self._llm is None:
+            return
+        self._outcome_emitted = True
+        try:
+            transcript = [m for m in getattr(self._agent.session, "turns", [])
+                          if isinstance(m, LLMMessage)]
+            analysis = await analyze_call(
+                transcript=transcript, slots=self._agent.slots.values,
+                telephony_status=None, final_action=self._last_action,
+                tenant_timezone=self._tenant_timezone, now=datetime.now(UTC), llm=self._llm)
+        except Exception:  # noqa: BLE001
+            log.exception("call outcome analysis failed")
+            return
+        cb = analysis.callback_datetime
+        log.info("call outcome", extra={"outcome": analysis.outcome.value,
+                 "source": analysis.analysis_source, "summary": analysis.summary[:200]})
+        await self._deliver_outcome({
+            "type": "outcome", "outcome": analysis.outcome.value,
+            "summary": analysis.summary, "notes": analysis.notes,
+            "callback_datetime": cb.isoformat() if cb else None,
+            "callback_phrase": analysis.callback_phrase, "source": analysis.analysis_source})
+
+    # --- transport hooks (subclass implements) --------------------------
+    async def _inbound_loop(self) -> None:
+        """Read caller audio off the transport and forward via session.send_audio."""
+        raise NotImplementedError
+
+    async def _send_audio_out(self, pcm16: bytes, rate: int) -> None:
+        """Send the model's PCM16 (at ``rate``) to the transport."""
+        raise NotImplementedError
+
+    async def _send_interrupt(self) -> None:
+        """Flush any buffered/playing agent audio on the transport (barge-in)."""
+        raise NotImplementedError
+
+    async def _on_start(self) -> None:
+        """Optional: pre-session transport handshake (e.g. read the browser hello)."""
+
+    async def _on_teardown(self) -> None:
+        """Optional: stop any transport-side tasks (e.g. the telephony sender)."""
+
+    async def _emit_status(self, status: str) -> None:
+        """Optional: surface a status to the transport (browser UI)."""
+
+    async def _emit_transcript(self, role: str, text: str, *, partial: bool) -> None:
+        """Optional: surface a transcript to the transport (browser UI)."""
+
+    async def _deliver_outcome(self, payload: dict) -> None:
+        """Optional: deliver the post-call outcome to the transport (browser UI)."""
