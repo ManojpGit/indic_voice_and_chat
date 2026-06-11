@@ -226,17 +226,17 @@ async def test_jwt_is_minted_when_no_token_override(adapter: StringeeAdapter) ->
 
 
 @pytest.mark.asyncio
-async def test_jwt_uses_userid_icc_api_when_user_id_set() -> None:
-    """With a user id, the token carries userId + icc_api (the internal-user/call
-    token) instead of rest_api — Stringee then treats the callout as
-    fromInternal=true and runs the Answer URL SCCO."""
+async def test_jwt_keeps_rest_api_and_adds_userid_when_user_id_set() -> None:
+    """The server callout token always keeps rest_api: true (required, else r:45);
+    when a user id is configured it ALSO attaches userId + icc_api (hedge to make
+    Stringee treat the callout as that internal user)."""
     import jwt
     a = StringeeAdapter({"api_key_sid": "test-sid", "api_key_secret": "test-secret",
                          "user_id": "ab858a8c7ad447d2a0b705ee93f8f134"})
     decoded = jwt.decode(a._make_access_token(), "test-secret", algorithms=["HS256"])
+    assert decoded["rest_api"] is True                       # required by the callout
     assert decoded["userId"] == "ab858a8c7ad447d2a0b705ee93f8f134"
     assert decoded["icc_api"] is True
-    assert "rest_api" not in decoded
 
 
 @pytest.mark.asyncio
