@@ -122,18 +122,16 @@ class StringeeAdapter(ITelephonyProvider):
         returns an SCC (Stringee Call Control) script when the destination
         picks up — equivalent to TwiML.
         """
-        # Stringee rejects E.164 with a leading '+' (r:10 FROM/TO_NUMBER_INVALID_
-        # FORMAT) — numbers must be BARE digits (e.g. 918204268005). Normalize
-        # here so callers/config can keep the '+E.164' form.
-        from_number = _bare_number(config.from_number)
+        # ``to`` is the real PSTN destination -> "external", BARE digits (Stringee
+        # rejects '+E.164' as r:10 FROM/TO_NUMBER_INVALID_FORMAT).
         to_number = _bare_number(config.to_number)
-        # Per Stringee support: the answer_url is NOT sent in the callout payload —
-        # it's configured on the Stringee project/dashboard. We also send no inline
-        # ``actions``. The callout body carries only the call legs.
-        # ``from`` is the originating Stringee-side identity -> type "internal";
-        # ``to`` is the real PSTN destination -> "external".
+        # ``from`` is an INTERNAL Stringee USER (a registered user id), not the PSTN
+        # caller-ID — that's what ``type: internal`` requires. Defaults to "test";
+        # override via STRINGEE_FROM_USER. (answer_url is configured on the Stringee
+        # dashboard, not sent here; no inline ``actions`` either.)
+        from_user = os.environ.get("STRINGEE_FROM_USER", "test")
         body: dict[str, Any] = {
-            "from": {"type": "internal", "number": from_number, "alias": from_number},
+            "from": {"type": "internal", "number": from_user, "alias": from_user},
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
         }
         async with httpx.AsyncClient(timeout=self._timeout) as client:
