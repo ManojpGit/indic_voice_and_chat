@@ -56,6 +56,12 @@ def decrypt(token: str) -> str:
         ) from e
 
 
+def has_key() -> bool:
+    """True if a master key is configured (without raising). Used to fail a
+    register request early when telephony keys are supplied but no key is set."""
+    return bool(os.environ.get(VOX_SECRET_KEY_ENV))
+
+
 def reset_cache_for_tests() -> None:
     """Drop the cached Fernet so a test can change VOX_SECRET_KEY."""
     _fernet.cache_clear()

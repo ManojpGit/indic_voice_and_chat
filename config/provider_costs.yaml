@@ -1,0 +1,24 @@
+# Current cost per minute per provider, by kind. Seeds the `provider_costs`
+# table on first boot (missing rows only — existing rates are preserved).
+# Maintained live via PUT /api/v1/providers/{kind}/{provider}.
+#
+# Units: USD/min. These are PLACEHOLDER rates — set your contracted rates via
+# the API. (LLM/STT are really token/char-priced; we model a per-minute rate.)
+stt:
+  sarvam: 0.0
+  groq: 0.0
+  deepgram: 0.0043
+llm:
+  groq: 0.0
+  gemini: 0.0
+  anthropic: 0.0
+tts:
+  sarvam: 0.0
+s2s:
+  gemini_live: 0.0
+telephony:
+  twilio: 0.014
+  exotel: 0.007
+  stringee: 0.010
+  infobip: 0.0
+  telnyx: 0.002

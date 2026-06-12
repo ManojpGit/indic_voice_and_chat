@@ -37,7 +37,7 @@ from src.api.dev_console import (
 )
 from src.auth.db_resolver import DbTenantResolver
 from src.auth.middleware import set_admin_tokens, set_tenant_resolver
-from src.auth.seed import seed_if_empty
+from src.auth.seed import seed_if_empty, seed_provider_costs
 from src.bootstrap import (
     build_provider_registry,
     make_bridge_factory,
@@ -77,6 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     seeded = await seed_if_empty(sessionmaker)
     if seeded:
         log.info("seeded tenants from YAML into DB", extra={"count": seeded})
+    await seed_provider_costs(sessionmaker)
     resolver = DbTenantResolver(sessionmaker)
     await resolver.reload()
     set_tenant_resolver(resolver)

@@ -9,8 +9,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from src.auth import secrets as crypto
 from src.auth.context import hash_api_token
 from src.auth.db_resolver import DbTenantResolver
-from src.auth.seed import seed_if_empty
+from src.auth.seed import seed_if_empty, seed_provider_costs
 from src.models import Base
+from src.models.tenant import ProviderCost
 
 
 @pytest_asyncio.fixture
@@ -58,3 +59,31 @@ async def test_seed_from_yaml_then_resolve(sm, tmp_path, monkeypatch):
     assert ctx.secret("SARVAM_API_KEY") == "master-sarvam"        # master env
     assert (await r.resolve_by_token(hash_api_token("demo-token"))).slug == "demo"
     assert (await r.resolve_by_phone_number("+91123")).slug == "demo"
+
+
+@pytest.mark.asyncio
+async def test_seed_provider_costs_inserts_missing_preserves_existing(sm, tmp_path):
+    costs_yaml = tmp_path / "costs.yaml"
+    costs_yaml.write_text(textwrap.dedent("""
+        tts: {sarvam: 0.0}
+        telephony: {twilio: 0.014, exotel: 0.007}
+    """))
+
+    # First seed inserts all three rows.
+    assert await seed_provider_costs(sm, costs_yaml) == 3
+
+    # An admin edits the twilio rate after seeding.
+    async with sm() as s:
+        row = await s.get(ProviderCost, ("telephony", "twilio"))
+        row.cost_per_min = 0.99
+        await s.commit()
+
+    # Re-seeding is insert-missing-only: nothing new, the edited rate is preserved.
+    assert await seed_provider_costs(sm, costs_yaml) == 0
+    async with sm() as s:
+        assert (await s.get(ProviderCost, ("telephony", "twilio"))).cost_per_min == 0.99
+
+
+@pytest.mark.asyncio
+async def test_seed_provider_costs_missing_file_is_noop(sm, tmp_path):
+    assert await seed_provider_costs(sm, tmp_path / "does-not-exist.yaml") == 0

@@ -39,21 +39,28 @@ DEFAULT_SPEAKER = "anushka"
 # Per Sarvam's current ``bulbul:v2`` speaker roster. ``bulbul:v1`` was
 # retired in 2025 (the API now only accepts ``bulbul:v2``, ``bulbul:v3``,
 # or ``bulbul:v3-beta``). ``meera`` / ``arjun`` no longer exist as speakers.
+#
+# In bulbul:v2 the speaker set is the SAME across every supported target
+# language (the model is multilingual — a speaker renders any of the languages
+# below), so we apply one canonical roster to all of them.
+_BULBUL_V2_SPEAKERS: list[dict] = [
+    {"voice_id": "anushka", "gender": "female"},
+    {"voice_id": "manisha", "gender": "female"},
+    {"voice_id": "vidya", "gender": "female"},
+    {"voice_id": "arya", "gender": "female"},
+    {"voice_id": "abhilash", "gender": "male"},
+    {"voice_id": "karun", "gender": "male"},
+    {"voice_id": "hitesh", "gender": "male"},
+]
+
+# Target languages bulbul:v2 supports (BCP-47 codes the API accepts).
+_BULBUL_V2_LANGUAGES = [
+    "hi-IN", "en-IN", "bn-IN", "gu-IN", "kn-IN", "ml-IN",
+    "mr-IN", "od-IN", "pa-IN", "ta-IN", "te-IN",
+]
+
 LANGUAGE_VOICES: dict[str, list[dict]] = {
-    "hi-IN": [
-        {"voice_id": "anushka", "gender": "female"},
-        {"voice_id": "manisha", "gender": "female"},
-        {"voice_id": "vidya", "gender": "female"},
-        {"voice_id": "abhilash", "gender": "male"},
-        {"voice_id": "karun", "gender": "male"},
-        {"voice_id": "hitesh", "gender": "male"},
-    ],
-    "en-IN": [
-        {"voice_id": "anushka", "gender": "female"},
-        {"voice_id": "manisha", "gender": "female"},
-        {"voice_id": "abhilash", "gender": "male"},
-        {"voice_id": "karun", "gender": "male"},
-    ],
+    lang: [dict(s) for s in _BULBUL_V2_SPEAKERS] for lang in _BULBUL_V2_LANGUAGES
 }
 
 

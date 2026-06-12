@@ -14,15 +14,25 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 
+import yaml
 from sqlalchemy import select
 
 from src.auth import secrets as crypto
 from src.auth.context import hash_api_token
 from src.config_tenant import _resolve_dir, discover_tenant_slugs, load_tenant
-from src.models.tenant import Tenant, TenantApiKey, TenantPhoneNumber, TenantSecret
+from src.models.tenant import (
+    ProviderCost,
+    Tenant,
+    TenantApiKey,
+    TenantPhoneNumber,
+    TenantSecret,
+)
 
 log = logging.getLogger(__name__)
+
+_PROVIDER_COSTS_YAML = Path("config/provider_costs.yaml")
 
 
 async def seed_tenants_from_yaml(session, tenant_dir=None) -> int:
@@ -80,3 +90,26 @@ async def seed_if_empty(sessionmaker, tenant_dir=None) -> int:
         if (await session.execute(select(Tenant.id).limit(1))).first() is not None:
             return 0
         return await seed_tenants_from_yaml(session, tenant_dir)
+
+
+async def seed_provider_costs(sessionmaker, path: Path = _PROVIDER_COSTS_YAML) -> int:
+    """Insert any provider_costs rows from the YAML that don't exist yet.
+
+    Existing rows (e.g. rates an admin updated via the API) are left untouched —
+    we only add missing (kind, provider) pairs. Returns the number inserted.
+    """
+    if not path.exists():
+        return 0
+    data = yaml.safe_load(path.read_text()) or {}
+    inserted = 0
+    async with sessionmaker() as session:
+        for kind, providers in data.items():
+            for provider, cost in (providers or {}).items():
+                if await session.get(ProviderCost, (kind, provider)) is None:
+                    session.add(ProviderCost(
+                        kind=kind, provider=provider, cost_per_min=float(cost)))
+                    inserted += 1
+        await session.commit()
+    if inserted:
+        log.info("seeded provider costs", extra={"inserted": inserted})
+    return inserted
