@@ -49,7 +49,7 @@ from src.config import Settings, get_settings
 from src.config_tenant import TenantSettings
 from src.dialogue.campaign_loader import active_campaign_slug, load_campaign
 from src.dialogue.context import SessionStore
-from src.models.database import dispose_engine, get_engine, get_sessionmaker
+from src.models.database import dispose_engine, ensure_schema, get_engine, get_sessionmaker
 from src.utils.logging import configure_logging, get_logger
 
 log = get_logger(__name__)
@@ -80,6 +80,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Eagerly create engine + redis pool so missing config fails on boot, not first request.
     get_engine(settings.database.url)
+    # Ensure our schema exists before anything touches a table (no-op on SQLite).
+    await ensure_schema(settings.database.url)
     redis_client = redis_async.from_url(settings.redis.url, decode_responses=False)
     app.state.redis = redis_client
     app.state.settings = settings

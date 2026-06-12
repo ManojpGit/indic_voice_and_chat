@@ -2,6 +2,14 @@
 
 Engines are created lazily so tests can supply their own URL (e.g. an
 in-memory SQLite) without booting postgres.
+
+**Schema namespacing.** All our tables live under a single schema (default
+``voice-bot``, configurable via ``VOX_DB_SCHEMA``) inside whatever database the
+URL points at — so we never need a database dedicated to us. The ORM models
+declare no schema; instead every Postgres connection sets ``search_path`` to our
+schema (via asyncpg ``server_settings``), so unqualified table names resolve to
+it for both DML and DDL. SQLite (tests) has no schemas, so the search_path is
+skipped there and tables stay in the default — test fixtures need no changes.
 """
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.schema import CreateSchema
 
 
 class Base(DeclarativeBase):
@@ -25,6 +34,36 @@ _engine: Optional[AsyncEngine] = None
 _sessionmaker: Optional[async_sessionmaker[AsyncSession]] = None
 
 
+def _is_sqlite(url: str) -> bool:
+    return url.startswith("sqlite")
+
+
+def get_schema(url: Optional[str] = None) -> Optional[str]:
+    """The schema our tables live under — None on SQLite or when unconfigured."""
+    from src.config import get_settings
+
+    settings = get_settings()
+    url = url or settings.database.url
+    if _is_sqlite(url):
+        return None
+    return getattr(settings.database, "db_schema", None) or None
+
+
+def _quote_ident(name: str) -> str:
+    """Double-quote an identifier for use in a search_path value (handles a
+    hyphenated schema like ``voice-bot``). Inner quotes are escaped."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def search_path_connect_args(url: str) -> dict:
+    """asyncpg connect_args that pin search_path to our schema (+ public for
+    shared types/extensions). Empty for SQLite / unconfigured."""
+    schema = get_schema(url)
+    if not schema:
+        return {}
+    return {"server_settings": {"search_path": f"{_quote_ident(schema)},public"}}
+
+
 def get_engine(url: Optional[str] = None) -> AsyncEngine:
     """Return the process-wide async engine, creating it on first call."""
     global _engine, _sessionmaker
@@ -33,9 +72,29 @@ def get_engine(url: Optional[str] = None) -> AsyncEngine:
             from src.config import get_settings
 
             url = get_settings().database.url
-        _engine = create_async_engine(url, future=True, pool_pre_ping=True)
+        _engine = create_async_engine(
+            url, future=True, pool_pre_ping=True,
+            connect_args=search_path_connect_args(url),
+        )
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
+
+
+async def ensure_schema(url: Optional[str] = None) -> None:
+    """Create our schema if it doesn't exist (no-op on SQLite). Idempotent."""
+    from src.config import get_settings
+
+    url = url or get_settings().database.url
+    schema = get_schema(url)
+    if not schema:
+        return
+    engine = get_engine(url)
+    async with engine.begin() as conn:
+        # CreateSchema isn't a schema-qualified table ref, so the translate map
+        # doesn't touch it — it emits CREATE SCHEMA with the real name, quoted.
+        await conn.run_sync(
+            lambda sync_conn: sync_conn.execute(CreateSchema(schema, if_not_exists=True))
+        )
 
 
 def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
@@ -57,6 +116,7 @@ async def dispose_engine() -> None:
 def reset_engine_for_tests(url: str) -> AsyncEngine:
     """Reinitialize the engine against a fresh URL (test fixture helper)."""
     global _engine, _sessionmaker
-    _engine = create_async_engine(url, future=True)
+    _engine = create_async_engine(
+        url, future=True, connect_args=search_path_connect_args(url))
     _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine

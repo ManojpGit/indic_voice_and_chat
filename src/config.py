@@ -18,8 +18,39 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def normalize_db_url(url: str) -> str:
+    """Make a hosted Postgres URL usable by the async (asyncpg) engine.
+
+    Managed providers (Northflank, Heroku, …) hand out libpq-style URLs like
+    ``postgresql://…?sslmode=require``. The async engine needs the
+    ``postgresql+asyncpg`` driver, and asyncpg doesn't accept libpq's
+    ``sslmode`` query arg — it wants ``ssl``. Normalize both. SQLite and
+    already-qualified URLs pass through untouched.
+    """
+    from urllib.parse import urlencode, urlsplit, urlunsplit
+
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+asyncpg://" + url[len("postgresql://"):]
+    if "+asyncpg" in url.split("://", 1)[0] and "sslmode=" in url:
+        parts = urlsplit(url)
+        params = [(k, v) for k, v in
+                  (p.split("=", 1) for p in parts.query.split("&") if p)]
+        out, ssl_val = [], None
+        for k, v in params:
+            if k == "sslmode":
+                ssl_val = v
+            else:
+                out.append((k, v))
+        if ssl_val and ssl_val != "disable":
+            out.append(("ssl", ssl_val))
+        url = urlunsplit(parts._replace(query=urlencode(out)))
+    return url
 
 
 # --- Sub-configs (mirror PRD §5.1) ----------------------------------------
@@ -45,6 +76,17 @@ class RedisConfig(BaseModel):
 
 class DatabaseConfig(BaseModel):
     url: str = "postgresql+asyncpg://vox:vox@localhost:5432/vox_agent"
+    # All our tables live under this schema inside whatever database the URL
+    # points at (so we never need a dedicated database). Ignored on SQLite
+    # (tests), which has no schemas. Override with VOX_DB_SCHEMA.
+    # NB: named ``db_schema`` (not ``schema``) to avoid shadowing
+    # ``pydantic.BaseModel.schema``.
+    db_schema: str = "voice-bot"
+
+    @field_validator("url")
+    @classmethod
+    def _normalize_url(cls, v: str) -> str:
+        return normalize_db_url(v)
 
 
 class STTConfig(BaseModel):
@@ -178,6 +220,7 @@ class Secrets(BaseSettings):
 
     # Infra overrides
     DATABASE_URL: Optional[str] = None
+    VOX_DB_SCHEMA: Optional[str] = None
     REDIS_URL: Optional[str] = None
 
     # Misc
@@ -215,6 +258,8 @@ def _apply_env_overrides(yaml_data: dict[str, Any], secrets: Secrets) -> dict[st
     """Apply env-derived overrides to the YAML config dict in place."""
     if secrets.DATABASE_URL:
         yaml_data.setdefault("database", {})["url"] = secrets.DATABASE_URL
+    if secrets.VOX_DB_SCHEMA:
+        yaml_data.setdefault("database", {})["db_schema"] = secrets.VOX_DB_SCHEMA
     if secrets.REDIS_URL:
         yaml_data.setdefault("redis", {})["url"] = secrets.REDIS_URL
     if secrets.WEBHOOK_BASE_URL:
