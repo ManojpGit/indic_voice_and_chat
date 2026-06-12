@@ -35,6 +35,7 @@ from src.api.dev_console import (
 from src.api.dev_console import (
     ws_router as dev_ws_router,
 )
+from src.api.call_store import record_outcome, set_call_outcome_persister
 from src.auth.db_resolver import DbTenantResolver
 from src.auth.middleware import set_admin_tokens, set_tenant_resolver
 from src.auth.seed import seed_if_empty, seed_provider_costs
@@ -58,6 +59,17 @@ def _admin_tokens_from_env() -> list[str]:
     """Comma-separated admin tokens in ``VOX_ADMIN_TOKENS``. Empty if unset."""
     raw = os.environ.get("VOX_ADMIN_TOKENS", "")
     return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def _parse_callback(value):
+    """Parse an ISO callback datetime from an outcome payload (None-safe)."""
+    if not value:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
 
 
 @asynccontextmanager
@@ -84,6 +96,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_admin_tokens(_admin_tokens_from_env())
     app.state.tenant_resolver = resolver
     app.state.tenants = resolver.loaded_settings()
+
+    # Bridges persist a finished call's outcome + cost to its conversations row
+    # (keyed by provider Call SID) through this hook at teardown.
+    async def _persist_call_outcome(call_sid: str, payload: dict) -> None:
+        async with sessionmaker() as session:
+            await record_outcome(
+                session, call_sid,
+                outcome=payload.get("outcome"),
+                summary=payload.get("summary"),
+                notes=payload.get("notes"),
+                callback_at=_parse_callback(payload.get("callback_datetime")),
+            )
+    set_call_outcome_persister(_persist_call_outcome)
 
     # --- Bridge factory: turn an inbound Twilio WS into a live agent ----
     providers = build_provider_registry(
@@ -143,6 +168,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         telephony_hooks.set_exotel_bridge_factory(None)
         telephony_hooks.set_stringee_bridge_factory(None)
         set_browser_bridge_factory(None)
+        set_call_outcome_persister(None)
         await redis_client.aclose()
         await dispose_engine()
         set_tenant_resolver(None)

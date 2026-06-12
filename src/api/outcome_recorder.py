@@ -61,3 +61,13 @@ class OutcomeRecorderMixin:
                 "callback": cb.isoformat() if cb else None,
             },
         )
+        # Persist to the conversations row (keyed by the provider Call SID), if
+        # the host knows its SID and a persister is wired. No-op otherwise.
+        from src.api import call_store
+        call_sid = getattr(self, "_provider_call_sid", None) or getattr(self, "_call_sid", None)
+        await call_store.deliver_to_persister(call_sid, {
+            "type": "outcome", "outcome": analysis.outcome.value,
+            "summary": analysis.summary, "notes": analysis.notes,
+            "callback_datetime": cb.isoformat() if cb else None,
+            "source": analysis.analysis_source,
+        })

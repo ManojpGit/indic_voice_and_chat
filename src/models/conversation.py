@@ -44,6 +44,7 @@ class Conversation(Base):
     stt_provider: Mapped[Optional[str]] = mapped_column(String(30))
     llm_provider: Mapped[Optional[str]] = mapped_column(String(30))
     tts_provider: Mapped[Optional[str]] = mapped_column(String(30))
+    realtime_provider: Mapped[Optional[str]] = mapped_column(String(30))  # s2s mode
     voice: Mapped[Optional[str]] = mapped_column(String(50))
     telephony_provider: Mapped[Optional[str]] = mapped_column(String(30))
     cost: Mapped[Optional[float]] = mapped_column(Float)

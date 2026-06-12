@@ -63,6 +63,7 @@ def upgrade() -> None:
     op.add_column("conversations", sa.Column("stt_provider", sa.String(30)))
     op.add_column("conversations", sa.Column("llm_provider", sa.String(30)))
     op.add_column("conversations", sa.Column("tts_provider", sa.String(30)))
+    op.add_column("conversations", sa.Column("realtime_provider", sa.String(30)))
     op.add_column("conversations", sa.Column("voice", sa.String(50)))
     op.add_column("conversations", sa.Column("telephony_provider", sa.String(30)))
     op.add_column("conversations", sa.Column("cost", sa.Float))
@@ -71,9 +72,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("idx_conversations_provider_call_sid", table_name="conversations")
-    for col in ("cost", "telephony_provider", "voice", "tts_provider", "llm_provider",
-                "stt_provider", "mode", "provider_call_sid", "callback_at", "notes",
-                "summary", "outcome"):
+    for col in ("cost", "telephony_provider", "voice", "realtime_provider", "tts_provider",
+                "llm_provider", "stt_provider", "mode", "provider_call_sid", "callback_at",
+                "notes", "summary", "outcome"):
         op.drop_column("conversations", col)
     op.drop_table("provider_costs")
     op.drop_table("tenant_secrets")
