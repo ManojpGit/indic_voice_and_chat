@@ -36,6 +36,17 @@ class Conversation(Base):
     interest_level: Mapped[Optional[str]] = mapped_column(String(20))
     slots_data: Mapped[dict] = mapped_column(JSON, default=dict)
     pipeline_config: Mapped[dict] = mapped_column(JSON, nullable=False)
+    # Provider Call SID (Twilio callSid / Exotel call_sid / Stringee call_id) — the
+    # key the bridge uses to find this row at teardown to write the outcome/cost.
+    provider_call_sid: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    # The config actually used on this call (for statistics) + the computed cost.
+    mode: Mapped[Optional[str]] = mapped_column(String(20))
+    stt_provider: Mapped[Optional[str]] = mapped_column(String(30))
+    llm_provider: Mapped[Optional[str]] = mapped_column(String(30))
+    tts_provider: Mapped[Optional[str]] = mapped_column(String(30))
+    voice: Mapped[Optional[str]] = mapped_column(String(50))
+    telephony_provider: Mapped[Optional[str]] = mapped_column(String(30))
+    cost: Mapped[Optional[float]] = mapped_column(Float)
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer)
     total_turns: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime] = mapped_column(
