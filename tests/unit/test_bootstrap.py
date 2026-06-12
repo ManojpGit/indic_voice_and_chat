@@ -1,27 +1,22 @@
 """Bootstrap tests for src/main.py lifespan logic.
 
-Validates that tenant discovery + resolver wiring happens correctly on
-startup, without spinning up real Redis / Postgres.
+Validates admin-token parsing. Tenant loading moved from YAML-on-boot to the
+DB resolver + seed (see test_seed.py / test_db_resolver.py).
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from src.main import _admin_tokens_from_env, _load_tenants
+from src.config_tenant import discover_tenant_slugs, load_tenant
+from src.main import _admin_tokens_from_env
 
 
-def test_load_tenants_picks_up_example_yaml() -> None:
-    """The shipped example tenant must load cleanly."""
-    out = _load_tenants(Path("config/tenants"))
-    assert "example" in out
-    assert out["example"].name == "Example Telecom"
-
-
-def test_load_tenants_empty_dir(tmp_path: Path) -> None:
-    assert _load_tenants(tmp_path) == {}
+def test_example_tenant_yaml_still_loads() -> None:
+    """The shipped example tenant must still parse (it's what the seed reads)."""
+    from pathlib import Path
+    assert "example" in discover_tenant_slugs(Path("config/tenants"))
+    assert load_tenant("example", Path("config/tenants")).name == "Example Telecom"
 
 
 def test_admin_tokens_from_env_empty(monkeypatch) -> None:

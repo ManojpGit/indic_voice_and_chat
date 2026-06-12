@@ -1,0 +1,66 @@
+from __future__ import annotations
+
+import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from src.auth import secrets as crypto
+from src.auth.context import hash_api_token
+from src.auth.db_resolver import DbTenantResolver
+from src.models import Base
+from src.models.tenant import Tenant, TenantApiKey, TenantPhoneNumber, TenantSecret
+
+
+@pytest_asyncio.fixture
+async def sm(monkeypatch):
+    monkeypatch.setenv(crypto.VOX_SECRET_KEY_ENV, crypto.generate_key())
+    crypto.reset_cache_for_tests()
+    eng = create_async_engine("sqlite+aiosqlite://")
+    async with eng.begin() as c:
+        await c.run_sync(Base.metadata.create_all)
+    yield async_sessionmaker(eng, expire_on_commit=False)
+    await eng.dispose()
+    crypto.reset_cache_for_tests()
+
+
+async def _seed_one(sm):
+    async with sm() as s:
+        s.add(Tenant(
+            id="t_acme", slug="acme", name="Acme", status="active",
+            timezone="Asia/Kolkata", default_language="hi", mode="layered",
+            max_concurrent_calls=3,
+            pipeline_config={
+                "mode": "layered",
+                "tts": {"provider": "sarvam", "voice_id": "anushka", "api_key_env": "SARVAM_API_KEY"},
+                "telephony": {"provider": "twilio", "from_number": "+1555",
+                              "account_sid_env": "twilio_sid", "auth_token_env": "twilio_token"},
+            }))
+        s.add(TenantPhoneNumber(phone_number="+1555", tenant_id="t_acme", provider="twilio"))
+        s.add(TenantApiKey(token_hash=hash_api_token("tok-abc"), tenant_id="t_acme", label="x"))
+        s.add(TenantSecret(tenant_id="t_acme", name="twilio_sid",
+                           value_encrypted=crypto.encrypt("AC-real-sid")))
+        await s.commit()
+
+
+@pytest.mark.asyncio
+async def test_resolver_rebuilds_settings_and_splits_secrets(sm, monkeypatch):
+    monkeypatch.setenv("SARVAM_API_KEY", "master-sarvam")
+    await _seed_one(sm)
+
+    r = DbTenantResolver(sm)
+    assert await r.reload() == 1
+
+    ctx = await r.resolve_by_slug("acme")
+    assert ctx is not None
+    assert ctx.id == "t_acme" and ctx.settings.timezone == "Asia/Kolkata"
+    assert ctx.settings.max_concurrent_calls == 3
+    assert ctx.settings.pipeline.telephony.provider == "twilio"
+    assert ctx.settings.pipeline.tts.voice_id == "anushka"
+
+    # telephony key resolves from the DB (decrypted); master keys fall back to env
+    assert ctx.secret("twilio_sid") == "AC-real-sid"
+    assert ctx.secret("SARVAM_API_KEY") == "master-sarvam"
+
+    assert (await r.resolve_by_token(hash_api_token("tok-abc"))).slug == "acme"
+    assert (await r.resolve_by_phone_number("+1555")).slug == "acme"
+    assert await r.resolve_by_slug("nope") is None

@@ -35,11 +35,9 @@ from src.api.dev_console import (
 from src.api.dev_console import (
     ws_router as dev_ws_router,
 )
-from src.auth.middleware import (
-    InMemoryTenantResolver,
-    set_admin_tokens,
-    set_tenant_resolver,
-)
+from src.auth.db_resolver import DbTenantResolver
+from src.auth.middleware import set_admin_tokens, set_tenant_resolver
+from src.auth.seed import seed_if_empty
 from src.bootstrap import (
     build_provider_registry,
     make_bridge_factory,
@@ -47,18 +45,13 @@ from src.bootstrap import (
     make_stringee_bridge_factory,
 )
 from src.config import Settings, get_settings
-from src.config_tenant import TenantSettings, discover_tenant_slugs, load_tenant
+from src.config_tenant import TenantSettings
 from src.dialogue.campaign_loader import active_campaign_slug, load_campaign
 from src.dialogue.context import SessionStore
 from src.models.database import dispose_engine, get_engine, get_sessionmaker
 from src.utils.logging import configure_logging, get_logger
 
 log = get_logger(__name__)
-
-
-def _load_tenants(tenant_dir: Path) -> dict[str, TenantSettings]:
-    """Discover every YAML file in ``tenant_dir`` and load it."""
-    return {slug: load_tenant(slug, tenant_dir) for slug in discover_tenant_slugs(tenant_dir)}
 
 
 def _admin_tokens_from_env() -> list[str]:
@@ -79,21 +72,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.redis = redis_client
     app.state.settings = settings
 
-    # --- Tenant discovery + auth ---------------------------------------
-    tenant_dir = Path(os.environ.get("VOX_TENANT_DIR", "config/tenants"))
-    tenants = _load_tenants(tenant_dir)
-    resolver = InMemoryTenantResolver()
-    for slug, tsettings in tenants.items():
-        # Tokens for tenant API access come from env via a per-tenant scheme:
-        # ``TENANT_<UPPER_SLUG>_API_TOKENS`` (comma-separated).
-        env_var = f"TENANT_{slug.upper()}_API_TOKENS"
-        raw_tokens = os.environ.get(env_var, "")
-        tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()]
-        resolver.register(tsettings, plaintext_tokens=tokens)
-        log.info("tenant registered", extra={"slug": slug, "tokens_count": len(tokens)})
+    # --- Tenants: DB-backed (YAML is migrated in on first boot, then ignored) ---
+    sessionmaker = get_sessionmaker()
+    seeded = await seed_if_empty(sessionmaker)
+    if seeded:
+        log.info("seeded tenants from YAML into DB", extra={"count": seeded})
+    resolver = DbTenantResolver(sessionmaker)
+    await resolver.reload()
     set_tenant_resolver(resolver)
     set_admin_tokens(_admin_tokens_from_env())
-    app.state.tenants = tenants
+    app.state.tenant_resolver = resolver
+    app.state.tenants = resolver.loaded_settings()
 
     # --- Bridge factory: turn an inbound Twilio WS into a live agent ----
     providers = build_provider_registry(

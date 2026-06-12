@@ -184,6 +184,7 @@ class TenantSettings(BaseModel):
     status: str = "active"
     default_language: str = "hi"
     timezone: str = "Asia/Kolkata"  # IANA tz; resolves relative callback times
+    max_concurrent_calls: int = 1   # per-tenant cap on simultaneous live calls
     webhook_secret_env: Optional[str] = None
 
     pipeline: TenantPipelineConfig = Field(default_factory=TenantPipelineConfig)

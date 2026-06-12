@@ -8,7 +8,7 @@ tenant-aware accepts one of these.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from src.config_tenant import TenantSettings
@@ -19,6 +19,11 @@ class TenantContext:
     """Immutable per-request tenant handle."""
 
     settings: TenantSettings
+    # Decrypted per-tenant secrets (TELEPHONY keys only), keyed by their config
+    # name (e.g. ``twilio_sid``). Loaded by the DB resolver. Everything else
+    # (STT/LLM/TTS/S2S) resolves from the shared master env, so ``secret()`` checks
+    # this map first and falls back to ``os.environ`` for non-telephony keys.
+    secrets_resolved: dict[str, str] = field(default_factory=dict)
 
     @property
     def id(self) -> str:
@@ -33,7 +38,11 @@ class TenantContext:
         return self.settings.name
 
     def secret(self, env_var: Optional[str]) -> Optional[str]:
-        return self.settings.secret(env_var)
+        if env_var is None:
+            return None
+        if env_var in self.secrets_resolved:          # per-tenant telephony key
+            return self.secrets_resolved[env_var]
+        return self.settings.secret(env_var)          # master env (stt/llm/tts/s2s)
 
 
 def hash_api_token(plaintext: str) -> str:
