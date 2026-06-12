@@ -136,16 +136,12 @@ class StringeeAdapter(ITelephonyProvider):
         # BARE digits (Stringee rejects '+E.164' as r:10).
         from_number = _bare_number(config.from_number)
         to_number = _bare_number(config.to_number)
-        # ``from`` is the INTERNAL user itself: type=internal, number=<userId>
-        # (last untried variant — making the call originate AS the Stringee user,
-        # which is what an internal call really is). Falls back to the external DID
-        # if no user id is configured. ``to`` is the external PSTN destination.
-        if self._user_id:
-            from_leg = {"type": "internal", "number": self._user_id, "alias": self._user_id}
-        else:
-            from_leg = {"type": "external", "number": from_number, "alias": from_number}
+        # ``from`` = the project DID, ``type: internal``. This is the last config
+        # that the callout ACCEPTS (r:0) and the phone rings — though Stringee still
+        # treats it as external (no CALL_START / Answer URL). Using the userId as the
+        # from.number is rejected r:4 FROM_NUMBER_NOT_FOUND, so the DID it is.
         body: dict[str, Any] = {
-            "from": from_leg,
+            "from": {"type": "internal", "number": from_number, "alias": from_number},
             "to": [{"type": "external", "number": to_number, "alias": to_number}],
             "answer_url": config.webhook_url,
         }
