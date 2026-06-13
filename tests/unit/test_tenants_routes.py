@@ -174,19 +174,28 @@ async def test_tenant_analytics_and_billing(ctx) -> None:
             id="c2", tenant_id=tid, agent_type="voicebot", channel="voice", status="ended",
             outcome="not_interested", pipeline_config={}, provider_call_sid="s2",
             telephony_provider="twilio", cost=0.03, duration_ms=60_000))
+        # a call with no outcome (ended before analysis) — must show as no_outcome
+        s.add(Conversation(
+            id="c3", tenant_id=tid, agent_type="voicebot", channel="webconsole", status="ended",
+            outcome=None, pipeline_config={}, provider_call_sid="s3",
+            cost=0.02, duration_ms=30_000))
         await s.commit()
 
     an = (await client.get(f"/tenants/{tid}/analytics", headers=ADMIN_HEADERS)).json()
-    assert an["total_calls"] == 2
-    assert an["by_status"]["ended"] == 2
+    assert an["total_calls"] == 3
+    assert an["by_status"]["ended"] == 3
     assert an["by_outcome"]["interested"] == 1
-    assert an["total_duration_ms"] == 180_000
+    assert an["by_outcome"]["no_outcome"] == 1            # null outcome counted
+    # both breakdowns total to total_calls (the bug: they used to mismatch)
+    assert sum(an["by_status"].values()) == an["total_calls"]
+    assert sum(an["by_outcome"].values()) == an["total_calls"]
+    assert an["total_duration_ms"] == 210_000
 
     bill = (await client.get(f"/tenants/{tid}/billing", headers=ADMIN_HEADERS)).json()
-    assert bill["total_calls"] == 2
-    assert bill["platform_cost"] == pytest.approx(0.09)        # 0.06 + 0.03, telephony excluded
-    assert bill["billable_minutes"] == pytest.approx(3.0)
-    # tentative telephony: 0.10/min * (2 + 1) min = 0.30
+    assert bill["total_calls"] == 3
+    assert bill["platform_cost"] == pytest.approx(0.11)        # 0.06 + 0.03 + 0.02, telephony excluded
+    assert bill["billable_minutes"] == pytest.approx(3.5)
+    # tentative telephony: 0.10/min * (2 + 1) min = 0.30 (c3 has no telephony)
     assert bill["tentative_telephony_cost"] == pytest.approx(0.30)
 
 

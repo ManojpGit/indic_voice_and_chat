@@ -305,8 +305,11 @@ async def tenant_analytics(
     total_dur = 0
     for status, outcome, dur in rows:
         by_status[status or "unknown"] = by_status.get(status or "unknown", 0) + 1
-        if outcome:
-            by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
+        # Count rows with no outcome under "no_outcome" so by_outcome totals to
+        # total_calls (matching by_status) — calls in progress or that ended
+        # before analysis have no outcome yet.
+        okey = outcome or "no_outcome"
+        by_outcome[okey] = by_outcome.get(okey, 0) + 1
         total_dur += int(dur or 0)
     n = len(rows)
     return TenantAnalytics(
