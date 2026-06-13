@@ -1,24 +1,27 @@
 # Current cost per minute per provider, by kind. Seeds the `provider_costs`
 # table on first boot (missing rows only — existing rates are preserved).
-# Maintained live via PUT /api/v1/providers/{kind}/{provider}.
+# Maintained live via PUT /api/v1/providers/{kind}/{provider} (or the Admin
+# console's cost catalog editor).
 #
-# Units: USD/min. These are PLACEHOLDER rates — set your contracted rates via
-# the API. (LLM/STT are really token/char-priced; we model a per-minute rate.)
+# Units: USD/min. These are APPROXIMATE market estimates (as of early 2026) to
+# make the cost estimate meaningful out of the box — replace with your actual
+# contracted rates. LLM/STT are really token/char-priced; we model a per-minute
+# rate from typical voice-agent usage (~150 words/min of dialogue).
 stt:
-  sarvam: 0.0
-  groq: 0.0
-  deepgram: 0.0043
+  sarvam: 0.006      # Sarvam Saarika/Saaras STT
+  groq: 0.002        # Groq whisper-large-v3 (~$0.11/audio-hour)
+  deepgram: 0.0043   # Deepgram Nova streaming
 llm:
-  groq: 0.0
-  gemini: 0.0
-  anthropic: 0.0
+  gemini: 0.002      # Gemini 2.5 flash-tier, typical turn volume
+  groq: 0.001        # Groq Llama (fast/cheap tier)
+  anthropic: 0.005   # Claude (provider-level avg; haiku cheaper, sonnet/opus more)
 tts:
-  sarvam: 0.0
+  sarvam: 0.015      # Sarvam Bulbul TTS
 s2s:
-  gemini_live: 0.0
+  gemini_live: 0.03  # Gemini Live realtime audio (in+out)
 telephony:
   twilio: 0.014
   exotel: 0.007
   stringee: 0.010
-  infobip: 0.0
-  telnyx: 0.002
+  infobip: 0.012
+  telnyx: 0.0035
