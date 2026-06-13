@@ -81,7 +81,7 @@ class DatabaseConfig(BaseModel):
     # (tests), which has no schemas. Override with VOX_DB_SCHEMA.
     # NB: named ``db_schema`` (not ``schema``) to avoid shadowing
     # ``pydantic.BaseModel.schema``.
-    db_schema: str = "voice-bot"
+    db_schema: str = "voicebot"
 
     @field_validator("url")
     @classmethod

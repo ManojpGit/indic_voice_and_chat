@@ -4,7 +4,7 @@ Engines are created lazily so tests can supply their own URL (e.g. an
 in-memory SQLite) without booting postgres.
 
 **Schema namespacing.** All our tables live under a single schema (default
-``voice-bot``, configurable via ``VOX_DB_SCHEMA``) inside whatever database the
+``voicebot``, configurable via ``VOX_DB_SCHEMA``) inside whatever database the
 URL points at — so we never need a database dedicated to us. The ORM models
 declare no schema; instead every Postgres connection sets ``search_path`` to our
 schema (via asyncpg ``server_settings``), so unqualified table names resolve to
@@ -50,8 +50,8 @@ def get_schema(url: Optional[str] = None) -> Optional[str]:
 
 
 def _quote_ident(name: str) -> str:
-    """Double-quote an identifier for use in a search_path value (handles a
-    hyphenated schema like ``voice-bot``). Inner quotes are escaped."""
+    """Double-quote an identifier for use in a search_path value (so a schema
+    name with special chars, e.g. a hyphen, still works). Inner quotes escaped."""
     return '"' + name.replace('"', '""') + '"'
 
 

@@ -40,6 +40,7 @@ def test_search_path_connect_args_sqlite_empty():
 def test_search_path_connect_args_postgres_quotes_schema():
     args = search_path_connect_args("postgresql+asyncpg://u:p@h/db")
     sp = args["server_settings"]["search_path"]
-    # Schema is double-quoted (handles a hyphenated name like voice-bot) + public.
+    # Schema is double-quoted (safe for any name, incl. special chars) + public.
     assert sp.endswith(",public")
     assert sp.startswith('"') and '"' in sp[1:]
+    assert "voicebot" in sp
