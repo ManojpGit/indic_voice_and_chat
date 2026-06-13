@@ -20,18 +20,19 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
-from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.api import campaigns, webhooks_routes
+from src.api.deps import get_db_session
 from src.auth import register_tenant_for_test
 from src.auth.middleware import set_tenant_resolver
-from src.auth.registry import TenantProviders, make_per_tenant_registry
+from src.auth.registry import TenantProviders
 from src.campaign.dnd_filter import (
     CallingHoursPolicy,
     DNDFilter,
@@ -49,8 +50,15 @@ from src.config_tenant import (
     TenantTelephonyConfig,
 )
 from src.integration.crm_client import FakeCRMClient
-from src.integration.event_bus import Event, EventBus
+from src.integration.event_bus import EventBus
 from src.integration.webhooks import WebhookConfig, WebhookManager
+from src.models.database import Base
+from src.models.tenant import Tenant
+
+
+async def _zero_sleep(seconds: float) -> None:
+    """Drive the orchestrator loop without real delays (tests)."""
+    return None
 
 
 # --- Setup --------------------------------------------------------------
@@ -148,9 +156,13 @@ def test_tenant_providers_route_to_distinct_clients(env, tmp_path) -> None:
 # --- Full API + orchestrator E2E ---------------------------------------
 
 
-@pytest.fixture
-def wired_app(env):
-    """FastAPI app with campaigns + webhooks routes and two tenants seeded."""
+@pytest_asyncio.fixture
+async def wired_app(env):
+    """DB-backed FastAPI app (campaigns + webhooks) with two tenants seeded.
+
+    Campaign/lead persistence goes through the DB; the orchestrator is driven
+    directly in the dispatch test (its HTTP auto-dial endpoints were retired).
+    """
     # Shared bus + crm for simplicity (tests focus on tenant scoping
     # at the HTTP/event-payload layer, not bus partitioning).
     bus = EventBus()
@@ -199,21 +211,36 @@ def wired_app(env):
     orchestrator = CampaignOrchestrator(
         scheduler=sched, dispatch=dispatch, bus=bus, crm=crm, max_concurrent=4
     )
-    campaigns.set_orchestrator(orchestrator)
 
-    # Two tenants with distinct bearer tokens.
+    # DB shared by the whole app. Seed the two tenant rows so campaign/lead
+    # FKs resolve; auth still goes through the in-memory resolver.
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    sm = async_sessionmaker(engine, expire_on_commit=False)
+    async with sm() as s:
+        s.add(Tenant(id="t_acme", slug="acme", name="Acme"))
+        s.add(Tenant(id="t_globex", slug="globex", name="Globex"))
+        await s.commit()
+
+    async def _session_override():
+        async with sm() as session:
+            yield session
+
     register_tenant_for_test(_tenant_settings("acme"), plaintext_tokens=["acme-token"])
     register_tenant_for_test(_tenant_settings("globex"), plaintext_tokens=["globex-token"])
 
     app = FastAPI()
     app.include_router(campaigns.router)
     app.include_router(webhooks_routes.router)
+    app.dependency_overrides[get_db_session] = _session_override
 
-    yield {"app": app, "bus": bus, "crm": crm, "webhook_calls": webhook_calls}
+    yield {"app": app, "bus": bus, "crm": crm, "webhook_calls": webhook_calls,
+           "orchestrator": orchestrator}
 
-    campaigns.set_orchestrator(None)
     webhooks_routes.set_webhook_manager(None)
     set_tenant_resolver(None)
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -221,6 +248,7 @@ async def test_two_tenants_run_concurrently_with_full_isolation(wired_app) -> No
     app = wired_app["app"]
     crm: FakeCRMClient = wired_app["crm"]
     webhook_calls = wired_app["webhook_calls"]
+    orchestrator: CampaignOrchestrator = wired_app["orchestrator"]
 
     acme_hdr = {"Authorization": "Bearer acme-token"}
     globex_hdr = {"Authorization": "Bearer globex-token"}
@@ -235,10 +263,7 @@ async def test_two_tenants_run_concurrently_with_full_isolation(wired_app) -> No
             "/webhooks", json={"url": "https://globex.example/wh", "event_filters": ["*"]},
         )
 
-        # 2. Each tenant creates its own campaign with the SAME id (c1) to
-        # prove namespacing — and the route must accept it because they're
-        # scoped per tenant... wait, the in-memory store uses the campaign_id
-        # alone as the key, so we use distinct campaign ids in practice.
+        # 2. Each tenant creates its own campaign (DB-backed, tenant-scoped).
         await client.post(
             "/campaigns", json={"id": "acme-c1", "name": "Acme Plan B"}, headers=acme_hdr,
         )
@@ -256,7 +281,7 @@ async def test_two_tenants_run_concurrently_with_full_isolation(wired_app) -> No
         cross = await client.get("/campaigns/globex-c1", headers=acme_hdr)
         assert cross.status_code == 404
 
-        # 5. Each tenant uploads its own leads.
+        # 5. Each tenant uploads its own leads (persisted to the DB).
         await client.post(
             "/campaigns/acme-c1/leads",
             files={"file": ("acme.csv", io.BytesIO(b"phone_number\n+91999990001\n+91999990002\n"), "text/csv")},
@@ -267,36 +292,40 @@ async def test_two_tenants_run_concurrently_with_full_isolation(wired_app) -> No
             files={"file": ("globex.csv", io.BytesIO(b"phone_number\n+91888880001\n+91888880002\n"), "text/csv")},
             headers=globex_hdr,
         )
+        assert (await client.get("/campaigns/acme-c1/leads", headers=acme_hdr)).json()["total"] == 2
+        assert (await client.get("/campaigns/globex-c1/leads", headers=globex_hdr)).json()["total"] == 2
 
-        # 6. Start both campaigns concurrently.
-        await client.post("/campaigns/acme-c1/start", headers=acme_hdr)
-        await client.post("/campaigns/globex-c1/start", headers=globex_hdr)
+    # 6. Drive both campaigns through the orchestrator (per-tenant), bounded so
+    # the loop terminates deterministically (one dispatch per lead).
+    acme_camp = Campaign(id="acme-c1", tenant_id="t_acme", name="Acme Plan B")
+    globex_camp = Campaign(id="globex-c1", tenant_id="t_globex", name="Globex Launch")
+    acme_leads = [
+        Lead(id="al1", tenant_id="t_acme", campaign_id="acme-c1", phone_number="+91999990001"),
+        Lead(id="al2", tenant_id="t_acme", campaign_id="acme-c1", phone_number="+91999990002"),
+    ]
+    globex_leads = [
+        Lead(id="gl1", tenant_id="t_globex", campaign_id="globex-c1", phone_number="+91888880001"),
+        Lead(id="gl2", tenant_id="t_globex", campaign_id="globex-c1", phone_number="+91888880002"),
+    ]
+    acme_run = await orchestrator.run(
+        acme_camp, acme_leads, max_iterations=50, sleep_fn=_zero_sleep)
+    globex_run = await orchestrator.run(
+        globex_camp, globex_leads, max_iterations=50, sleep_fn=_zero_sleep)
 
-        # 7. Poll until both finish.
-        import asyncio
-        for _ in range(50):
-            await asyncio.sleep(0.02)
-            a = (await client.get("/campaigns/acme-c1", headers=acme_hdr)).json()
-            g = (await client.get("/campaigns/globex-c1", headers=globex_hdr)).json()
-            if a["calls_attempted"] == 2 and g["calls_attempted"] == 2:
-                break
+    assert acme_run.campaign.calls_attempted == 2
+    assert globex_run.campaign.calls_attempted == 2
+    # One qualifying lead per tenant (the one ending in 0001).
+    assert acme_run.campaign.leads_qualified == 1
+    assert globex_run.campaign.leads_qualified == 1
 
-        a_final = (await client.get("/campaigns/acme-c1", headers=acme_hdr)).json()
-        g_final = (await client.get("/campaigns/globex-c1", headers=globex_hdr)).json()
-        assert a_final["calls_attempted"] == 2
-        assert g_final["calls_attempted"] == 2
-        # One qualifying lead per tenant (the one ending in 0001).
-        assert a_final["leads_qualified"] == 1
-        assert g_final["leads_qualified"] == 1
-
-    # 8. CRM updates: total = 4 (2 per tenant). Each update has the right tenant_id.
+    # 7. CRM updates: total = 4 (2 per tenant). Each update has the right tenant_id.
     assert len(crm.updates) == 4
     acme_updates = [u for u in crm.updates if u.tenant_id == "t_acme"]
     globex_updates = [u for u in crm.updates if u.tenant_id == "t_globex"]
     assert len(acme_updates) == 2
     assert len(globex_updates) == 2
 
-    # 9. Webhook payloads carry tenant_id and were delivered to BOTH URLs
+    # 8. Webhook payloads carry tenant_id and were delivered to BOTH URLs
     # (because both webhooks subscribed to "*" on the shared bus).
     event_types_by_tenant: dict[str, list[str]] = {"t_acme": [], "t_globex": []}
     for _, body in webhook_calls:

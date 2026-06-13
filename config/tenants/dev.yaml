@@ -92,6 +92,7 @@ pipeline:
 
   tts:
     provider: sarvam
+    model: bulbul:v2
     language: hi-IN
     voice_id: anushka
     speed: 1.0

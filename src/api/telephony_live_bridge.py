@@ -79,6 +79,10 @@ class TelephonyLiveBridge(_BaseLiveBridge):
         # Publish to the dev-console call monitor so a placed call shows its outcome.
         if self._call_sid is not None:
             dev_call_control.monitor.set_outcome(self._call_sid, payload)
+        # Persist to the conversations row (keyed by provider Call SID), if a
+        # persister is wired. No-op for the dev console / tests without a DB.
+        from src.api import call_store
+        await call_store.deliver_to_persister(self._call_sid, payload)
 
     async def _inbound_loop(self) -> None:
         from starlette.websockets import WebSocketDisconnect

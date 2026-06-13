@@ -1,0 +1,174 @@
+<!-- static/backoffice.html — ADMIN backoffice: tenant list + per-tenant
+     analytics & billing. Admin bearer only; every panel is a live /api/v1 call. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vox Backoffice</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin:0; background:#0a0a0a; color:#e2e8f0; }
+  header { padding:.75rem 1rem; background:#3b0764; border-bottom:1px solid #1f2937; }
+  header h1 { font-size:1.05rem; margin:0 0 .5rem; }
+  .creds { display:flex; gap:.75rem; flex-wrap:wrap; align-items:flex-end; }
+  label { font-size:.8rem; color:#cbd5e1; display:flex; flex-direction:column; gap:.2rem; }
+  input { background:#0b1220; color:#e2e8f0; border:1px solid #334155; border-radius:.35rem; padding:.4rem; font:inherit; }
+  button { padding:.4rem .8rem; border-radius:.4rem; border:0; cursor:pointer; font-weight:600; background:#ea580c; color:#fff; }
+  button.ghost { background:#334155; color:#e2e8f0; }
+  button.sm { padding:.25rem .5rem; font-size:.75rem; }
+  .wrap { padding:1rem; }
+  .card { background:#0f1115; border:1px solid #1f2430; border-radius:.6rem; padding:1rem 1.1rem; margin-bottom:1rem; }
+  .card h2 { font-size:.95rem; margin:.1rem 0 .7rem; color:#cbd5e1; }
+  table { width:100%; border-collapse:collapse; font-size:.82rem; }
+  th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid #1f2937; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:#141a24; }
+  tbody tr.sel { background:#1e293b; }
+  .pill { font-size:.7rem; padding:.05rem .4rem; border-radius:.3rem; background:#334155; }
+  .pill.s2s { background:#0c4a6e; } .pill.layered { background:#3f2d12; }
+  .hint { color:#8a94a6; font-size:.75rem; }
+  .tabs { display:flex; gap:.4rem; margin-bottom:.7rem; }
+  .tab { padding:.35rem .8rem; border-radius:.4rem; background:#1a1f29; color:#cbd5e1; cursor:pointer; font-size:.85rem; }
+  .tab.active { background:#3b82f6; color:#fff; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.7rem; }
+  .stat { background:#0b1220; border:1px solid #243042; border-radius:.5rem; padding:.7rem .8rem; }
+  .stat .v { font-size:1.3rem; font-weight:800; font-variant-numeric:tabular-nums; }
+  .stat .k { font-size:.72rem; color:#8a94a6; text-transform:uppercase; letter-spacing:.03em; }
+  .stat.tnt .v { color:#94a3b8; font-style:italic; }
+  .kv { font-size:.82rem; } .kv div { padding:.15rem 0; border-bottom:1px solid #141a24; }
+  a { color:#93c5fd; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Vox Backoffice <span class="hint">— tenants · analytics · billing · <a href="/admin">register</a> · <a href="/console">tenant console</a></span></h1>
+  <div class="creds">
+    <label>API base URL <input id="baseUrl" style="width:15rem" placeholder="(same origin)" /></label>
+    <label>Admin token <input id="adminToken" style="width:16rem" placeholder="Bearer for admin routes" /></label>
+    <button class="ghost sm" onclick="saveCreds()">Save</button>
+    <button class="ghost sm" onclick="loadTenants()">Reload</button>
+    <span id="credsHint" class="hint"></span>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>Tenants <span class="hint">(click a row to see analytics &amp; billing)</span></h2>
+    <div id="tlist"><span class="hint">Enter your admin token + Save to load tenants.</span></div>
+  </div>
+
+  <div class="card" id="detail" hidden>
+    <h2 id="detailTitle">Tenant</h2>
+    <div class="tabs">
+      <div class="tab active" id="tab_an" onclick="showTab('an')">Analytics</div>
+      <div class="tab" id="tab_bill" onclick="showTab('bill')">Billing</div>
+    </div>
+    <div id="pane_an"></div>
+    <div id="pane_bill" hidden></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function loadCreds() {
+  $("baseUrl").value    = localStorage.getItem("vox_base")  || "";
+  $("adminToken").value = localStorage.getItem("vox_admin") || "";
+}
+function saveCreds() {
+  localStorage.setItem("vox_base",  $("baseUrl").value.trim());
+  localStorage.setItem("vox_admin", $("adminToken").value.trim());
+  $("credsHint").textContent = "saved"; setTimeout(() => $("credsHint").textContent = "", 1200);
+  loadTenants();
+}
+const base = () => ($("baseUrl").value.trim() || window.location.origin).replace(/\/$/, "");
+const fmt = (c) => "$" + (Number(c) || 0).toFixed(4);
+const mins = (ms) => ((Number(ms) || 0) / 60000).toFixed(1);
+
+async function api(path) {
+  const headers = {};
+  const t = $("adminToken").value.trim();
+  if (t) headers["Authorization"] = "Bearer " + t;
+  try {
+    const res = await fetch(base() + path, { headers });
+    const json = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, json };
+  } catch (e) { return { ok: false, status: 0, json: { error: String(e) } }; }
+}
+
+const lay = (l) => l && l.provider ? `${l.provider}${l.model ? " · " + l.model : ""}` : "—";
+let SELECTED = null;
+
+async function loadTenants() {
+  const r = await api("/api/v1/tenants");
+  if (!r.ok) { $("tlist").innerHTML = `<span class="hint">Could not load (${r.status}). Check the admin token.</span>`; return; }
+  const ts = r.json.tenants || [];
+  if (!ts.length) { $("tlist").innerHTML = `<span class="hint">No tenants yet — register one on <a href="/admin">/admin</a>.</span>`; return; }
+  $("tlist").innerHTML = `<table><thead><tr>
+      <th>slug</th><th>name</th><th>mode</th><th>LLM</th><th>STT</th><th>TTS</th>
+      <th>Realtime</th><th>Telephony</th><th>max</th><th>status</th></tr></thead>
+    <tbody>${ts.map(t => `<tr data-id="${t.tenant_id}" onclick="selectTenant('${t.tenant_id}','${t.slug}')">
+      <td>${t.slug}</td><td>${t.name}</td>
+      <td><span class="pill ${t.mode}">${t.mode}</span></td>
+      <td>${lay(t.llm)}</td><td>${lay(t.stt)}</td><td>${lay(t.tts)}</td>
+      <td>${lay(t.realtime)}</td><td>${t.telephony_provider || "—"}</td>
+      <td>${t.max_concurrent_calls}</td><td>${t.status}</td></tr>`).join("")}</tbody></table>`;
+}
+
+async function selectTenant(id, slug) {
+  SELECTED = id;
+  for (const tr of document.querySelectorAll("#tlist tbody tr"))
+    tr.classList.toggle("sel", tr.dataset.id === id);
+  $("detail").hidden = false;
+  $("detailTitle").textContent = `Tenant: ${slug}`;
+  showTab("an");
+  await loadAnalytics(id);
+  await loadBilling(id);
+}
+function showTab(which) {
+  $("tab_an").classList.toggle("active", which === "an");
+  $("tab_bill").classList.toggle("active", which === "bill");
+  $("pane_an").hidden = which !== "an";
+  $("pane_bill").hidden = which !== "bill";
+}
+
+function statBox(k, v, cls) { return `<div class="stat ${cls || ""}"><div class="v">${v}</div><div class="k">${k}</div></div>`; }
+
+async function loadAnalytics(id) {
+  const r = await api(`/api/v1/tenants/${id}/analytics`);
+  if (!r.ok) { $("pane_an").innerHTML = `<span class="hint">analytics error ${r.status}</span>`; return; }
+  const a = r.json;
+  const rows = (obj) => Object.keys(obj).length
+    ? Object.entries(obj).map(([k, v]) => `<div>${k}: <b>${v}</b></div>`).join("") : '<span class="hint">none</span>';
+  $("pane_an").innerHTML = `
+    <div class="stats">
+      ${statBox("Total calls", a.total_calls)}
+      ${statBox("Total minutes", mins(a.total_duration_ms))}
+      ${statBox("Avg call (min)", mins(a.avg_duration_ms))}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:.8rem;">
+      <div><h2>By status</h2><div class="kv">${rows(a.by_status)}</div></div>
+      <div><h2>By outcome</h2><div class="kv">${rows(a.by_outcome)}</div></div>
+    </div>`;
+}
+
+async function loadBilling(id) {
+  const r = await api(`/api/v1/tenants/${id}/billing`);
+  if (!r.ok) { $("pane_bill").innerHTML = `<span class="hint">billing error ${r.status}</span>`; return; }
+  const b = r.json;
+  $("pane_bill").innerHTML = `
+    <div class="stats">
+      ${statBox("Platform cost", fmt(b.platform_cost))}
+      ${statBox("Total calls", b.total_calls)}
+      ${statBox("Billable minutes", b.billable_minutes)}
+      ${statBox("Avg / call", fmt(b.avg_cost_per_call))}
+      ${statBox("Telephony (tentative)", "~" + fmt(b.tentative_telephony_cost), "tnt")}
+    </div>
+    <div class="hint" style="margin-top:.6rem;">Platform cost = STT/LLM/TTS or S2S (what we bill). Telephony runs on the
+      tenant's own provider key, so it's shown as a tentative figure and is <b>not</b> in the platform cost.</div>`;
+}
+
+loadCreds(); loadTenants();
+</script>
+</body>
+</html>

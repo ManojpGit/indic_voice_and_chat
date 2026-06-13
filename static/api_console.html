@@ -1,0 +1,212 @@
+<!-- static/api_console.html — TENANT console: campaigns, calls, voices/costs.
+     Tenant bearer only. Every button is a live /api/v1 call (admin tasks like
+     registering tenants live on /admin). -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vox Tenant Console</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin:0; background:#0f172a; color:#e2e8f0; }
+  header { padding:.75rem 1rem; background:#111827; border-bottom:1px solid #1f2937; position:sticky; top:0; z-index:5; }
+  header h1 { font-size:1.05rem; margin:0 0 .5rem; }
+  .creds { display:flex; gap:.75rem; flex-wrap:wrap; align-items:flex-end; }
+  .layout { display:flex; gap:1rem; padding:1rem; align-items:flex-start; }
+  .cards { flex:1 1 620px; display:flex; flex-direction:column; gap:1rem; min-width:0; }
+  .log { flex:0 0 420px; position:sticky; top:5.5rem; max-height:calc(100vh - 7rem); overflow:auto;
+         background:#0b1220; border:1px solid #1f2937; border-radius:.5rem; padding:.6rem; }
+  .card { background:#1e293b; border-radius:.5rem; padding:.85rem 1rem; }
+  .card h2 { font-size:.95rem; margin:.1rem 0 .7rem; color:#cbd5e1; }
+  label { font-size:.8rem; color:#cbd5e1; display:flex; flex-direction:column; gap:.2rem; }
+  input, select, textarea { background:#0b1220; color:#e2e8f0; border:1px solid #334155; border-radius:.35rem; padding:.4rem; font:inherit; }
+  textarea { min-height:64px; font-family:ui-monospace,monospace; font-size:.8rem; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.6rem; margin-bottom:.7rem; }
+  button { padding:.45rem .9rem; border-radius:.4rem; border:0; cursor:pointer; font-weight:600; background:#3b82f6; color:#fff; }
+  button.ghost { background:#334155; color:#e2e8f0; }
+  button.sm { padding:.25rem .5rem; font-size:.75rem; }
+  .hint { color:#94a3b8; font-size:.75rem; }
+  table { width:100%; border-collapse:collapse; font-size:.8rem; }
+  th, td { text-align:left; padding:.3rem .4rem; border-bottom:1px solid #243042; }
+  pre { white-space:pre-wrap; word-break:break-word; margin:0; font-size:.78rem; }
+  .entry { border-bottom:1px solid #1f2937; padding:.4rem 0; }
+  .entry .ln { font-family:ui-monospace,monospace; font-size:.75rem; }
+  .ok { color:#86efac; } .err { color:#fca5a5; } .muted { color:#94a3b8; }
+  .out { margin-top:.5rem; background:#0b1220; border:1px solid #243042; border-radius:.35rem; padding:.5rem; }
+  a { color:#93c5fd; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Vox Tenant Console <span class="hint">— campaigns &amp; calls for your tenant · tenant onboarding lives on <a href="/admin">/admin</a></span></h1>
+  <div class="creds">
+    <label>API base URL <input id="baseUrl" style="width:16rem" placeholder="(same origin)" /></label>
+    <label>Tenant token <input id="tenantToken" style="width:18rem" placeholder="Bearer issued at registration" /></label>
+    <button class="ghost sm" onclick="saveCreds()">Save</button>
+    <span id="credsHint" class="hint"></span>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="cards">
+
+    <!-- Reference: providers + voices -->
+    <div class="card">
+      <h2>Reference</h2>
+      <div style="display:flex; gap:.6rem; flex-wrap:wrap; align-items:flex-end;">
+        <button onclick="loadProviders()">GET /providers</button>
+        <label>Voice provider <select id="v_provider"><option>sarvam</option><option>gemini_live</option></select></label>
+        <label>Language <input id="v_lang" value="hi-IN" style="width:6rem" /></label>
+        <button class="ghost" onclick="loadVoices()">GET /voices</button>
+      </div>
+      <div id="prov_out" class="out" hidden></div>
+      <div id="voice_out" class="out" hidden></div>
+    </div>
+
+    <!-- Campaigns -->
+    <div class="card">
+      <h2>Campaigns</h2>
+      <div class="grid">
+        <label>Name <input id="c_name" value="Plan B Launch" /></label>
+        <label>Campaign id (optional) <input id="c_id" placeholder="auto" /></label>
+      </div>
+      <label>Script (campaign YAML, optional) <textarea id="c_script" placeholder="agent: ..."></textarea></label>
+      <div style="margin-top:.6rem; display:flex; gap:.5rem; flex-wrap:wrap;">
+        <button onclick="createCampaign()">POST /campaigns</button>
+        <button class="ghost" onclick="listCampaigns()">GET /campaigns</button>
+      </div>
+      <div style="margin-top:.7rem; display:flex; gap:.5rem; flex-wrap:wrap; align-items:flex-end;">
+        <label>Campaign id <input id="c_target" placeholder="camp_…" /></label>
+        <input type="file" id="c_leads" accept=".csv" />
+        <button class="ghost" onclick="uploadLeads()">Upload leads CSV</button>
+        <button class="ghost" onclick="endCampaign()">End campaign</button>
+      </div>
+      <div id="camp_out" class="out" hidden></div>
+    </div>
+
+    <!-- Call Lead -->
+    <div class="card">
+      <h2>Call Lead</h2>
+      <div class="grid">
+        <label>Campaign id <input id="call_camp" placeholder="camp_…" /></label>
+        <label>To number <input id="call_to" value="+918618795697" /></label>
+        <label>From number (optional) <input id="call_from" placeholder="tenant default" /></label>
+        <label>Voice (optional) <input id="call_voice" placeholder="tenant default" /></label>
+      </div>
+      <div style="display:flex; gap:.5rem; flex-wrap:wrap; align-items:flex-end;">
+        <button onclick="callLead()">POST /campaigns/{id}/calls</button>
+        <label>Call id <input id="call_id" placeholder="call_…" /></label>
+        <button class="ghost" onclick="pollCall()">GET /calls/{id}</button>
+        <label><input type="checkbox" id="call_autopoll" /> auto-poll</label>
+      </div>
+      <div id="call_out" class="out" hidden></div>
+    </div>
+  </div>
+
+  <div class="log">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <strong style="font-size:.85rem;">API call log</strong>
+      <button class="ghost sm" onclick="clearLog()">clear</button>
+    </div>
+    <div id="logBody"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function loadCreds() {
+  $("baseUrl").value     = localStorage.getItem("vox_base") || "";
+  $("tenantToken").value = localStorage.getItem("vox_tok")  || "";
+}
+function saveCreds() {
+  localStorage.setItem("vox_base", $("baseUrl").value.trim());
+  localStorage.setItem("vox_tok",  $("tenantToken").value.trim());
+  $("credsHint").textContent = "saved"; setTimeout(() => $("credsHint").textContent = "", 1500);
+}
+const base = () => ($("baseUrl").value.trim() || window.location.origin).replace(/\/$/, "");
+
+let autoNum = 0;
+async function api(method, path, { body, form } = {}) {
+  const headers = {};
+  const token = $("tenantToken").value.trim();
+  if (token) headers["Authorization"] = "Bearer " + token;
+  let payload;
+  if (form) payload = body;
+  else if (body !== undefined) { headers["Content-Type"] = "application/json"; payload = JSON.stringify(body); }
+  const id = ++autoNum;
+  try {
+    const res = await fetch(base() + path, { method, headers, body: payload });
+    const text = await res.text(); let json; try { json = JSON.parse(text); } catch { json = text; }
+    logEntry(id, method, path, res.status, json);
+    return { ok: res.ok, status: res.status, json };
+  } catch (e) { logEntry(id, method, path, "ERR", String(e)); return { ok: false, status: 0, json: String(e) }; }
+}
+function logEntry(id, method, path, status, body) {
+  const div = document.createElement("div"); div.className = "entry";
+  const ok = status !== "ERR" && status < 400;
+  div.innerHTML = `<div class="ln"><span class="${ok ? 'ok' : 'err'}">${status}</span> <strong>${method}</strong> ${path}</div>`;
+  const pre = document.createElement("pre"); pre.className = "muted";
+  pre.textContent = typeof body === "string" ? body : JSON.stringify(body, null, 2);
+  div.appendChild(pre); $("logBody").prepend(div);
+}
+function clearLog() { $("logBody").innerHTML = ""; }
+function show(el, obj) { const e = $(el); e.hidden = false; e.innerHTML = ""; const p = document.createElement("pre"); p.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2); e.appendChild(p); }
+
+async function loadProviders() {
+  const r = await api("GET", "/api/v1/providers");
+  const el = $("prov_out"); el.hidden = false;
+  if (!r.ok) { show("prov_out", r.json); return; }
+  el.innerHTML = `<table><tr><th>kind</th><th>provider</th><th>model</th><th>cost/min</th></tr>` +
+    (r.json.providers || []).map(p => `<tr><td>${p.kind}</td><td>${p.provider}</td><td>${p.model || "(any)"}</td><td>${p.cost_per_min}</td></tr>`).join("") + `</table>`;
+}
+async function loadVoices() {
+  const r = await api("GET", `/api/v1/voices?provider=${encodeURIComponent($("v_provider").value)}&language=${encodeURIComponent($("v_lang").value)}`);
+  show("voice_out", r.json);
+}
+
+async function createCampaign() {
+  const body = { name: $("c_name").value, script: $("c_script").value };
+  if ($("c_id").value.trim()) body.id = $("c_id").value.trim();
+  const r = await api("POST", "/api/v1/campaigns", { body });
+  show("camp_out", r.json);
+  if (r.ok && r.json.id) { $("c_target").value = r.json.id; $("call_camp").value = r.json.id; }
+}
+async function listCampaigns() { show("camp_out", (await api("GET", "/api/v1/campaigns")).json); }
+async function endCampaign() {
+  const id = $("c_target").value.trim(); if (!id) return alert("campaign id?");
+  show("camp_out", (await api("POST", `/api/v1/campaigns/${id}/end`)).json);
+}
+async function uploadLeads() {
+  const id = $("c_target").value.trim(); const f = $("c_leads").files[0];
+  if (!id || !f) return alert("campaign id + CSV file?");
+  const fd = new FormData(); fd.append("file", f, f.name);
+  show("camp_out", (await api("POST", `/api/v1/campaigns/${id}/leads`, { form: true, body: fd })).json);
+}
+
+async function callLead() {
+  const id = $("call_camp").value.trim(); if (!id) return alert("campaign id?");
+  const body = { to_number: $("call_to").value.trim() };
+  if ($("call_from").value.trim()) body.from_number = $("call_from").value.trim();
+  if ($("call_voice").value.trim()) body.voice = $("call_voice").value.trim();
+  const r = await api("POST", `/api/v1/campaigns/${id}/calls`, { body });
+  show("call_out", r.json);
+  if (r.ok && r.json.call_id) { $("call_id").value = r.json.call_id; if ($("call_autopoll").checked) autoPoll(r.json.call_id); }
+}
+async function pollCall() {
+  const id = $("call_id").value.trim(); if (!id) return alert("call id?");
+  show("call_out", (await api("GET", `/api/v1/calls/${id}`)).json);
+}
+async function autoPoll(id) {
+  for (let i = 0; i < 30; i++) {
+    const r = await api("GET", `/api/v1/calls/${id}`);
+    show("call_out", r.json);
+    if (!r.ok || ["ended", "failed"].includes(r.json.status)) break;
+    await new Promise(res => setTimeout(res, 3000));
+  }
+}
+
+loadCreds();
+</script>
+</body>
+</html>

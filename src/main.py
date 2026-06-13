@@ -15,12 +15,27 @@ Lifespan-based startup:
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Load .env into the process environment for local runs, so settings read via
+# os.environ (VOX_SECRET_KEY, VOX_ADMIN_TOKENS, TENANT_*_API_TOKENS, …) work
+# without a manual `source .env`. override=False → real env (e.g. Northflank)
+# always wins, and a missing file is a no-op. Skipped under pytest so test
+# fixtures control the environment.
+if "pytest" not in sys.modules:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+    except ImportError:
+        pass
+
 import redis.asyncio as redis_async
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from sqlalchemy import text
 
 from src.api import api_router, telephony_hooks
@@ -35,11 +50,10 @@ from src.api.dev_console import (
 from src.api.dev_console import (
     ws_router as dev_ws_router,
 )
-from src.auth.middleware import (
-    InMemoryTenantResolver,
-    set_admin_tokens,
-    set_tenant_resolver,
-)
+from src.api.call_store import record_outcome, set_call_outcome_persister
+from src.auth.db_resolver import DbTenantResolver
+from src.auth.middleware import set_admin_tokens, set_tenant_resolver
+from src.auth.seed import seed_if_empty, seed_provider_costs
 from src.bootstrap import (
     build_provider_registry,
     make_bridge_factory,
@@ -47,24 +61,30 @@ from src.bootstrap import (
     make_stringee_bridge_factory,
 )
 from src.config import Settings, get_settings
-from src.config_tenant import TenantSettings, discover_tenant_slugs, load_tenant
+from src.config_tenant import TenantSettings
 from src.dialogue.campaign_loader import active_campaign_slug, load_campaign
 from src.dialogue.context import SessionStore
-from src.models.database import dispose_engine, get_engine, get_sessionmaker
+from src.models.database import dispose_engine, ensure_schema, get_engine, get_sessionmaker
 from src.utils.logging import configure_logging, get_logger
 
 log = get_logger(__name__)
-
-
-def _load_tenants(tenant_dir: Path) -> dict[str, TenantSettings]:
-    """Discover every YAML file in ``tenant_dir`` and load it."""
-    return {slug: load_tenant(slug, tenant_dir) for slug in discover_tenant_slugs(tenant_dir)}
 
 
 def _admin_tokens_from_env() -> list[str]:
     """Comma-separated admin tokens in ``VOX_ADMIN_TOKENS``. Empty if unset."""
     raw = os.environ.get("VOX_ADMIN_TOKENS", "")
     return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+def _parse_callback(value):
+    """Parse an ISO callback datetime from an outcome payload (None-safe)."""
+    if not value:
+        return None
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
 
 
 @asynccontextmanager
@@ -75,25 +95,37 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Eagerly create engine + redis pool so missing config fails on boot, not first request.
     get_engine(settings.database.url)
+    # Ensure our schema exists before anything touches a table (no-op on SQLite).
+    await ensure_schema(settings.database.url)
     redis_client = redis_async.from_url(settings.redis.url, decode_responses=False)
     app.state.redis = redis_client
     app.state.settings = settings
 
-    # --- Tenant discovery + auth ---------------------------------------
-    tenant_dir = Path(os.environ.get("VOX_TENANT_DIR", "config/tenants"))
-    tenants = _load_tenants(tenant_dir)
-    resolver = InMemoryTenantResolver()
-    for slug, tsettings in tenants.items():
-        # Tokens for tenant API access come from env via a per-tenant scheme:
-        # ``TENANT_<UPPER_SLUG>_API_TOKENS`` (comma-separated).
-        env_var = f"TENANT_{slug.upper()}_API_TOKENS"
-        raw_tokens = os.environ.get(env_var, "")
-        tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()]
-        resolver.register(tsettings, plaintext_tokens=tokens)
-        log.info("tenant registered", extra={"slug": slug, "tokens_count": len(tokens)})
+    # --- Tenants: DB-backed (YAML is migrated in on first boot, then ignored) ---
+    sessionmaker = get_sessionmaker()
+    seeded = await seed_if_empty(sessionmaker)
+    if seeded:
+        log.info("seeded tenants from YAML into DB", extra={"count": seeded})
+    await seed_provider_costs(sessionmaker)
+    resolver = DbTenantResolver(sessionmaker)
+    await resolver.reload()
     set_tenant_resolver(resolver)
     set_admin_tokens(_admin_tokens_from_env())
-    app.state.tenants = tenants
+    app.state.tenant_resolver = resolver
+    app.state.tenants = resolver.loaded_settings()
+
+    # Bridges persist a finished call's outcome + cost to its conversations row
+    # (keyed by provider Call SID) through this hook at teardown.
+    async def _persist_call_outcome(call_sid: str, payload: dict) -> None:
+        async with sessionmaker() as session:
+            await record_outcome(
+                session, call_sid,
+                outcome=payload.get("outcome"),
+                summary=payload.get("summary"),
+                notes=payload.get("notes"),
+                callback_at=_parse_callback(payload.get("callback_datetime")),
+            )
+    set_call_outcome_persister(_persist_call_outcome)
 
     # --- Bridge factory: turn an inbound Twilio WS into a live agent ----
     providers = build_provider_registry(
@@ -153,6 +185,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         telephony_hooks.set_exotel_bridge_factory(None)
         telephony_hooks.set_stringee_bridge_factory(None)
         set_browser_bridge_factory(None)
+        set_call_outcome_persister(None)
         await redis_client.aclose()
         await dispose_engine()
         set_tenant_resolver(None)
@@ -172,6 +205,34 @@ app.include_router(api_router)
 
 if dev_console_enabled():
     app.include_router(dev_router)              # GET /dev/voice
+
+
+_STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+
+
+@app.get("/console", include_in_schema=False)
+async def api_console() -> FileResponse:
+    """Tenant browser UI (campaigns, calls, reference) over /api/v1.
+
+    Always available — it bypasses no auth: it just calls the API with the
+    tenant bearer the operator pastes in, so the API enforces access as usual.
+    """
+    return FileResponse(_STATIC_DIR / "api_console.html", media_type="text/html")
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_console() -> FileResponse:
+    """Admin browser UI (register tenants, maintain provider costs) over /api/v1.
+
+    Uses an admin bearer pasted in by the operator — bypasses no auth.
+    """
+    return FileResponse(_STATIC_DIR / "admin_console.html", media_type="text/html")
+
+
+@app.get("/admin/tenants", include_in_schema=False)
+async def backoffice() -> FileResponse:
+    """Admin backoffice: tenant list + per-tenant analytics & billing."""
+    return FileResponse(_STATIC_DIR / "backoffice.html", media_type="text/html")
 
 
 @app.get("/health")

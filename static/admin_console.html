@@ -1,0 +1,320 @@
+<!-- static/admin_console.html — ADMIN console: register tenants (with a live
+     cost breakdown) + maintain provider costs. Admin bearer only. Every button
+     is a live /api/v1 call. -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vox Admin Console</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; margin:0; background:#0a0a0a; color:#e2e8f0; }
+  header { padding:.75rem 1rem; background:#3b0764; border-bottom:1px solid #1f2937; position:sticky; top:0; z-index:5; }
+  header h1 { font-size:1.05rem; margin:0 0 .5rem; }
+  .creds { display:flex; gap:.75rem; flex-wrap:wrap; align-items:flex-end; }
+  .layout { display:flex; gap:1rem; padding:1rem; align-items:flex-start; }
+  .cards { flex:1 1 640px; display:flex; flex-direction:column; gap:1rem; min-width:0; }
+  .log { flex:0 0 400px; position:sticky; top:5.5rem; max-height:calc(100vh - 7rem); overflow:auto;
+         background:#0b1220; border:1px solid #1f2937; border-radius:.5rem; padding:.6rem; }
+  .card { background:#0f1115; border:1px solid #1f2430; border-radius:.6rem; padding:1rem 1.1rem; }
+  .card h2 { font-size:.95rem; margin:.1rem 0 .8rem; color:#cbd5e1; }
+  .badge { font-size:.65rem; padding:.1rem .4rem; border-radius:.3rem; background:#7c2d12; color:#fed7aa; margin-left:.4rem; }
+  label { font-size:.8rem; color:#cbd5e1; display:flex; flex-direction:column; gap:.2rem; }
+  input, select, textarea { background:#0b1220; color:#e2e8f0; border:1px solid #334155; border-radius:.35rem; padding:.4rem; font:inherit; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.6rem; margin-bottom:.7rem; }
+  button { padding:.45rem .9rem; border-radius:.4rem; border:0; cursor:pointer; font-weight:600; background:#ea580c; color:#fff; }
+  button.ghost { background:#334155; color:#e2e8f0; }
+  button.sm { padding:.25rem .5rem; font-size:.75rem; }
+  .hint { color:#8a94a6; font-size:.75rem; }
+  table { width:100%; border-collapse:collapse; font-size:.8rem; }
+  th, td { text-align:left; padding:.3rem .4rem; border-bottom:1px solid #243042; }
+  pre { white-space:pre-wrap; word-break:break-word; margin:0; font-size:.78rem; }
+  .entry { border-bottom:1px solid #1f2937; padding:.4rem 0; }
+  .entry .ln { font-family:ui-monospace,monospace; font-size:.75rem; }
+  .ok { color:#86efac; } .err { color:#fca5a5; } .muted { color:#94a3b8; }
+  .out { margin-top:.5rem; background:#0b1220; border:1px solid #243042; border-radius:.35rem; padding:.5rem; }
+  a { color:#93c5fd; }
+
+  /* cost breakdown */
+  .breakdown { border:1px solid #1f2430; border-radius:.5rem; overflow:hidden; margin:.4rem 0 .2rem; }
+  .crow { display:grid; grid-template-columns:minmax(110px,1fr) minmax(180px,1.4fr) 8.5rem;
+          gap:.7rem; align-items:center; padding:.6rem .8rem; border-bottom:1px solid #1a1f29; }
+  .crow:last-child { border-bottom:0; }
+  .crow.tentative { background:#0c1016; }
+  .crow .clabel { font-weight:700; letter-spacing:.04em; font-size:.82rem; text-transform:uppercase; }
+  .crow .clabel small { color:#8a94a6; font-weight:400; text-transform:none; letter-spacing:0; }
+  .crow .cctrl { display:flex; gap:.35rem; }
+  .crow .cctrl select { width:100%; }
+  .crow .ccost { font-variant-numeric:tabular-nums; text-align:right; color:#e2e8f0; font-size:.9rem; }
+  .crow .ccost.tnt { color:#94a3b8; font-style:italic; }
+  .ctotal { display:flex; justify-content:space-between; align-items:center; padding:.75rem .2rem .2rem;
+            font-weight:800; letter-spacing:.04em; }
+  .ctotal .amt { font-size:1.15rem; font-variant-numeric:tabular-nums; }
+  .ctotal .lbl { text-transform:uppercase; font-size:.85rem; color:#cbd5e1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Vox Admin Console <span class="badge">admin</span> <span class="hint">— register tenants &amp; maintain provider costs · <a href="/admin/tenants">backoffice</a> · <a href="/console">tenant console</a></span></h1>
+  <div class="creds">
+    <label>API base URL <input id="baseUrl" style="width:16rem" placeholder="(same origin)" /></label>
+    <label>Admin token <input id="adminToken" style="width:16rem" placeholder="Bearer for admin routes" /></label>
+    <button class="ghost sm" onclick="saveCreds()">Save</button>
+    <span id="credsHint" class="hint"></span>
+  </div>
+</header>
+
+<div class="layout">
+  <div class="cards">
+
+    <!-- Register Tenant -->
+    <div class="card">
+      <h2>Register Tenant</h2>
+      <div class="grid">
+        <label>Name <input id="t_name" value="Acme Telecom" /></label>
+        <label>Slug (optional) <input id="t_slug" placeholder="auto from name" /></label>
+        <label>Mode
+          <select id="t_mode" onchange="syncMode()"><option value="layered">layered (cascade)</option><option value="s2s">s2s (realtime)</option></select>
+        </label>
+        <label>Max concurrent calls <input id="t_max" type="number" value="2" min="1" /></label>
+        <label>Language <input id="t_lang" value="hi-IN" onchange="fillVoices('tts')" /></label>
+      </div>
+
+      <!-- live cost breakdown -->
+      <div class="breakdown">
+        <div class="crow" id="row_s2s" hidden>
+          <span class="clabel">Agent Session <small>(S2S realtime)</small></span>
+          <span class="cctrl"><select id="sel_s2s" onchange="onProvider('s2s')"></select><select id="mdl_s2s" style="max-width:9rem" onchange="recompute()"></select><select id="voi_s2s" style="max-width:7rem"></select></span>
+          <span class="ccost" id="cost_s2s">—</span>
+        </div>
+        <div class="crow" id="row_llm">
+          <span class="clabel">LLM <small>(language model)</small></span>
+          <span class="cctrl"><select id="sel_llm" onchange="onProvider('llm')"></select><select id="mdl_llm" onchange="recompute()"></select></span>
+          <span class="ccost" id="cost_llm">—</span>
+        </div>
+        <div class="crow" id="row_stt">
+          <span class="clabel">STT <small>(speech-to-text)</small></span>
+          <span class="cctrl"><select id="sel_stt" onchange="onProvider('stt')"></select><select id="mdl_stt" onchange="recompute()"></select></span>
+          <span class="ccost" id="cost_stt">—</span>
+        </div>
+        <div class="crow" id="row_tts">
+          <span class="clabel">TTS <small>(text-to-speech)</small></span>
+          <span class="cctrl"><select id="sel_tts" onchange="onProvider('tts')"></select><select id="mdl_tts" style="max-width:8rem" onchange="recompute()"></select><select id="voi_tts" style="max-width:7rem"></select></span>
+          <span class="ccost" id="cost_tts">—</span>
+        </div>
+        <div class="crow tentative" id="row_telephony">
+          <span class="clabel">Telephony <small>(tenant's own key — tentative)</small></span>
+          <span class="cctrl"><select id="sel_telephony" onchange="recompute()"></select></span>
+          <span class="ccost tnt" id="cost_telephony">—</span>
+        </div>
+      </div>
+      <div class="ctotal"><span class="lbl">Total estimated cost <small style="font-weight:400;color:#8a94a6;text-transform:none;">(platform — excl. telephony)</small></span><span class="amt" id="cost_total">$0.0000/min</span></div>
+      <div class="hint" id="cost_note">Rates from the provider cost catalog. Enter your admin token + Save to load live rates. Telephony runs on the tenant's own provider key, so it's shown as a tentative estimate and not added to the platform total.</div>
+
+      <!-- telephony details (creds + routing) -->
+      <h2 style="margin-top:1rem;">Telephony details</h2>
+      <div class="grid">
+        <label>From number <input id="t_from" value="+15705255679" /></label>
+        <label>Webhook base URL <input id="t_webhook" value="https://example.com/api/v1/telephony" /></label>
+        <label>account_sid <input id="t_sid" placeholder="AC… (encrypted at rest)" /></label>
+        <label>auth_token <input id="t_tok" placeholder="… (encrypted at rest)" /></label>
+      </div>
+
+      <button onclick="registerTenant()">POST /tenants</button>
+      <button class="ghost sm" onclick="loadCatalog(); loadCosts()">reload catalog</button>
+      <span class="hint">Telephony keys are encrypted; STT/LLM/TTS use shared master keys. The returned token goes to the tenant for /console.</span>
+      <div id="t_out" class="out" hidden></div>
+    </div>
+
+    <!-- Provider costs -->
+    <div class="card">
+      <h2>Provider cost catalog <span class="hint">(edit rates → feeds the estimate above)</span></h2>
+      <button onclick="loadCosts()">GET /providers</button>
+      <div id="prov_out" class="out" hidden></div>
+    </div>
+  </div>
+
+  <div class="log">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <strong style="font-size:.85rem;">API call log</strong>
+      <button class="ghost sm" onclick="clearLog()">clear</button>
+    </div>
+    <div id="logBody"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function loadCreds() {
+  $("baseUrl").value    = localStorage.getItem("vox_base")  || "";
+  $("adminToken").value = localStorage.getItem("vox_admin") || "";
+}
+function saveCreds() {
+  localStorage.setItem("vox_base",  $("baseUrl").value.trim());
+  localStorage.setItem("vox_admin", $("adminToken").value.trim());
+  $("credsHint").textContent = "saved"; setTimeout(() => $("credsHint").textContent = "", 1500);
+  loadCosts();  // live rates need the admin token
+}
+const base = () => ($("baseUrl").value.trim() || window.location.origin).replace(/\/$/, "");
+const fmt = (c) => "$" + (Number(c) || 0).toFixed(4) + "/min";
+
+let autoNum = 0;
+async function api(method, path, { body, form } = {}) {
+  const headers = {};
+  const token = $("adminToken").value.trim();
+  if (token) headers["Authorization"] = "Bearer " + token;
+  let payload;
+  if (form) payload = body;
+  else if (body !== undefined) { headers["Content-Type"] = "application/json"; payload = JSON.stringify(body); }
+  const id = ++autoNum;
+  try {
+    const res = await fetch(base() + path, { method, headers, body: payload });
+    const text = await res.text(); let json; try { json = JSON.parse(text); } catch { json = text; }
+    logEntry(id, method, path, res.status, json);
+    return { ok: res.ok, status: res.status, json };
+  } catch (e) { logEntry(id, method, path, "ERR", String(e)); return { ok: false, status: 0, json: String(e) }; }
+}
+function logEntry(id, method, path, status, body) {
+  const div = document.createElement("div"); div.className = "entry";
+  const ok = status !== "ERR" && status < 400;
+  div.innerHTML = `<div class="ln"><span class="${ok ? 'ok' : 'err'}">${status}</span> <strong>${method}</strong> ${path}</div>`;
+  const pre = document.createElement("pre"); pre.className = "muted";
+  pre.textContent = typeof body === "string" ? body : JSON.stringify(body, null, 2);
+  div.appendChild(pre); $("logBody").prepend(div);
+}
+function clearLog() { $("logBody").innerHTML = ""; }
+function show(el, obj) { const e = $(el); e.hidden = false; e.innerHTML = ""; const p = document.createElement("pre"); p.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2); e.appendChild(p); }
+
+let MODELS = {};   // kind -> provider -> [models]
+let COSTS = {};    // kind -> provider -> model("" = provider-level) -> cost/min
+
+function setOptions(sel, values, selected) {
+  if (!sel) return;
+  sel.innerHTML = "";
+  for (const v of values) { const o = document.createElement("option"); o.value = v; o.textContent = v; if (v === selected) o.selected = true; sel.appendChild(o); }
+}
+// webconsole = browser test path (no real telephony / no cost); always offered.
+const TEL_FALLBACK = ["twilio", "exotel", "stringee", "infobip", "telnyx"];
+
+function fillModelsFor(kind) {
+  const prov = $("sel_" + kind).value;
+  setOptions($("mdl_" + kind), (MODELS[kind] && MODELS[kind][prov]) || []);
+}
+async function fillVoices(which) {
+  const prov = $("sel_" + which).value;
+  const lang = which === "s2s" ? "hi-IN" : ($("t_lang").value || "hi-IN");
+  const r = await api("GET", `/api/v1/voices?provider=${encodeURIComponent(prov)}&language=${encodeURIComponent(lang)}`);
+  setOptions($("voi_" + which), (r.ok && r.json.voices ? r.json.voices : []).map(v => v.voice_id));
+}
+function onProvider(kind) {                // provider changed in a row
+  fillModelsFor(kind);
+  if (kind === "tts" || kind === "s2s") fillVoices(kind);
+  recompute();
+}
+function rowCost(kind) {
+  const sel = $("sel_" + kind); if (!sel || !sel.value) return null;
+  const byModel = COSTS[kind] && COSTS[kind][sel.value];
+  if (!byModel) return null;
+  const mdl = $("mdl_" + kind);                          // telephony has no model select
+  const model = mdl ? mdl.value : "";
+  // exact model rate, else provider-level ("") fallback.
+  if (model in byModel) return byModel[model];
+  if ("" in byModel) return byModel[""];
+  return null;
+}
+function recompute() {
+  const mode = $("t_mode").value;
+  const platform = mode === "s2s" ? ["s2s"] : ["llm", "stt", "tts"];
+  let total = 0;
+  for (const kind of ["s2s", "llm", "stt", "tts"]) {
+    const active = platform.includes(kind);
+    const c = active ? rowCost(kind) : null;
+    $("cost_" + kind).textContent = !active ? "—" : (c === null ? "—" : fmt(c));
+    if (active && c !== null) total += c;
+  }
+  // Telephony: tentative (tenant's own key) — shown but never in the total.
+  // webconsole is the browser test path: no telephony cost at all.
+  if ($("sel_telephony").value === "webconsole") {
+    $("cost_telephony").textContent = "n/a (browser test)";
+  } else {
+    const tc = rowCost("telephony");
+    $("cost_telephony").textContent = tc === null ? "tentative" : "~" + fmt(tc);
+  }
+  $("cost_total").textContent = fmt(total);
+}
+function syncMode() {
+  const s2s = $("t_mode").value === "s2s";
+  $("row_s2s").hidden = !s2s;
+  for (const k of ["llm", "stt", "tts"]) $("row_" + k).hidden = s2s;
+  recompute();
+}
+
+async function loadCatalog() {
+  const r = await api("GET", "/api/v1/models");   // public
+  if (!r.ok) return;
+  MODELS = r.json.models || {};
+  setOptions($("sel_stt"), Object.keys(MODELS.stt || {}), "groq");
+  setOptions($("sel_llm"), Object.keys(MODELS.llm || {}), "gemini");
+  setOptions($("sel_tts"), Object.keys(MODELS.tts || {}), "sarvam");
+  setOptions($("sel_s2s"), Object.keys(MODELS.s2s || {}), "gemini_live");
+  for (const k of ["stt", "llm", "tts", "s2s"]) fillModelsFor(k);
+  await fillVoices("tts"); await fillVoices("s2s");
+  recompute();
+}
+function rowKey(kind, provider, model) { return `${kind}|${provider}|${model}`; }
+async function loadCosts() {
+  const r = await api("GET", "/api/v1/providers");   // tenant-or-admin
+  COSTS = {};
+  if (r.ok) for (const p of (r.json.providers || [])) {
+    const byProv = (COSTS[p.kind] = COSTS[p.kind] || {});
+    (byProv[p.provider] = byProv[p.provider] || {})[p.model || ""] = p.cost_per_min;
+  }
+  // telephony options: webconsole (browser test) + catalog providers (fallback set)
+  const cat = Object.keys(COSTS.telephony || {});
+  const tels = Array.from(new Set(["webconsole", ...(cat.length ? cat : TEL_FALLBACK)]));
+  setOptions($("sel_telephony"), tels, "twilio");
+  $("cost_note").textContent = r.ok
+    ? "Per-model rates from the cost catalog (live) — total updates with the model dropdowns."
+    : "Could not load rates — enter your admin token + Save.";
+  // editable catalog table (one row per kind/provider/model)
+  const el = $("prov_out"); el.hidden = false;
+  if (!r.ok) { show("prov_out", r.json); recompute(); return; }
+  el.innerHTML = `<table><tr><th>kind</th><th>provider</th><th>model</th><th>cost/min</th><th></th></tr>` +
+    (r.json.providers || []).map(p => {
+      const k = rowKey(p.kind, p.provider, p.model || "");
+      return `<tr><td>${p.kind}</td><td>${p.provider}</td><td>${p.model || "<i>(any)</i>"}</td>
+        <td><input id="pc_${k}" value="${p.cost_per_min}" style="width:6rem"></td>
+        <td><button class="sm" onclick="updateCost('${p.kind}','${p.provider}','${p.model || ""}')">PUT</button></td></tr>`;
+    }).join("") + `</table>`;
+  recompute();
+}
+async function updateCost(kind, provider, model) {
+  const v = Number($(`pc_${rowKey(kind, provider, model)}`).value);
+  const r = await api("PUT", `/api/v1/providers/${kind}/${provider}`, { body: { cost_per_min: v, model } });
+  if (r.ok) loadCosts();
+}
+
+async function registerTenant() {
+  const mode = $("t_mode").value;
+  const body = {
+    name: $("t_name").value, mode, max_concurrent_calls: Number($("t_max").value) || 1,
+    telephony: { provider: $("sel_telephony").value, from_number: $("t_from").value, webhook_base_url: $("t_webhook").value, keys: {} },
+  };
+  if (mode === "s2s") body.realtime = { provider: $("sel_s2s").value, model: $("mdl_s2s").value, voice: $("voi_s2s").value, language_code: $("t_lang").value };
+  else {
+    body.stt = { provider: $("sel_stt").value, model: $("mdl_stt").value, language: $("t_lang").value };
+    body.llm = { provider: $("sel_llm").value, model: $("mdl_llm").value };
+    body.tts = { provider: $("sel_tts").value, model: $("mdl_tts").value, voice_id: $("voi_tts").value, language: $("t_lang").value };
+  }
+  if ($("t_slug").value.trim()) body.slug = $("t_slug").value.trim();
+  if ($("t_sid").value.trim()) body.telephony.keys.account_sid = $("t_sid").value.trim();
+  if ($("t_tok").value.trim()) body.telephony.keys.auth_token = $("t_tok").value.trim();
+  const r = await api("POST", "/api/v1/tenants", { body });
+  show("t_out", r.json);
+}
+
+loadCreds(); syncMode(); loadCatalog(); loadCosts();
+</script>
+</body>
+</html>
