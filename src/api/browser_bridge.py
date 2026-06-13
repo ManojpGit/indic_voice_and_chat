@@ -120,6 +120,7 @@ class BrowserVoiceBridge:
         self._tenant_timezone = tenant_timezone
         self._last_action: str | None = None
         self._outcome_emitted = False
+        self._outcome_payload = None  # dict set by _emit_outcome; read for billing
 
     # --- outbound helpers ---------------------------------------------
 
@@ -595,6 +596,13 @@ class BrowserVoiceBridge:
                 "callback": cb.isoformat() if cb else None,
             },
         )
+        # Stash for the WS handler to persist to the conversation row (billing).
+        self._outcome_payload = {
+            "outcome": analysis.outcome.value, "summary": analysis.summary,
+            "notes": analysis.notes,
+            "callback_datetime": cb.isoformat() if cb else None,
+            "source": analysis.analysis_source,
+        }
         try:
             await self._send_json({
                 "type": "outcome",

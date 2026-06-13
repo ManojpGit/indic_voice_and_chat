@@ -104,6 +104,33 @@ async def test_telephony_tentative_cost(sm):
         assert await telephony_tentative_cost(s, "twilio", 0) == 0.0
 
 
+async def test_insert_call_snapshots_config(sm):
+    from src.api.call_store import insert_call
+    from src.auth.context import TenantContext
+    from src.config_tenant import (
+        TenantLLMConfig, TenantPipelineConfig, TenantSettings, TenantSTTConfig,
+        TenantTelephonyConfig, TenantTTSConfig,
+    )
+    ctx = TenantContext(settings=TenantSettings(
+        id="t1", slug="t1", name="T1",
+        pipeline=TenantPipelineConfig(
+            stt=TenantSTTConfig(provider="groq", model="whisper-large-v3"),
+            llm=TenantLLMConfig(provider="gemini", model="gemini-2.5-flash"),
+            tts=TenantTTSConfig(provider="sarvam", model="bulbul:v2", voice_id="anushka"),
+            telephony=TenantTelephonyConfig(provider="webconsole"))))
+    async with sm() as s:
+        await insert_call(s, call_id="call_x", tenant=ctx, provider_call_sid="call_x",
+                          channel="webconsole")
+    async with sm() as s:
+        got = await s.get(Conversation, "call_x")
+    assert got.channel == "webconsole"
+    assert got.status == "in_progress"
+    assert (got.stt_provider, got.llm_provider, got.tts_provider) == ("groq", "gemini", "sarvam")
+    assert got.telephony_provider == "webconsole"
+    assert got.voice == "anushka"
+    assert got.pipeline_config["tts"]["model"] == "bulbul:v2"
+
+
 async def test_count_active_calls(sm):
     async with sm() as s:
         s.add(_conv(id="c1", provider_call_sid="s1", status="in_progress"))

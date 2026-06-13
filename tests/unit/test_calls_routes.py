@@ -165,6 +165,32 @@ async def test_get_call_cross_tenant_404(ctx) -> None:
     assert (await client.get("/calls/other-call")).status_code == 404
 
 
+async def test_call_lead_webconsole_returns_helpful_409(ctx) -> None:
+    client, sm = ctx
+    # A tenant whose telephony is 'webconsole' has no outbound dialing.
+    register_tenant_for_test(
+        TenantSettings(
+            id="t_wc", slug="wc", name="WC", max_concurrent_calls=2,
+            pipeline=TenantPipelineConfig(
+                stt=TenantSTTConfig(provider="groq"), llm=TenantLLMConfig(provider="gemini"),
+                tts=TenantTTSConfig(provider="sarvam", voice_id="anushka"),
+                telephony=TenantTelephonyConfig(provider="webconsole"),
+            ),
+        ),
+        plaintext_tokens=["wc-token"],
+    )
+    async with sm() as s:
+        s.add(Tenant(id="t_wc", slug="wc", name="WC"))
+        s.add(DbCampaign(id="wc1", tenant_id="t_wc", name="WC", status="active", config_yaml=""))
+        await s.commit()
+    resp = await client.post(
+        "/campaigns/wc1/calls", json={"to_number": "+9118"},
+        headers={"Authorization": "Bearer wc-token"})
+    assert resp.status_code == 409
+    assert "webconsole" in resp.json()["detail"]
+    assert "/console" in resp.json()["detail"]
+
+
 async def test_call_lead_requires_auth(ctx) -> None:
     client, _ = ctx
     resp = await client.post(

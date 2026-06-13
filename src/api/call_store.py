@@ -16,6 +16,7 @@ from typing import Awaitable, Callable, Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.auth.context import TenantContext
 from src.models.conversation import Conversation
 from src.models.tenant import ProviderCost
 
@@ -23,6 +24,38 @@ log = logging.getLogger(__name__)
 
 # A call counts against the concurrency cap while it is being placed or is live.
 ACTIVE_STATUSES = ("in_progress", "answered")
+
+
+async def insert_call(
+    session: AsyncSession,
+    *,
+    call_id: str,
+    tenant: TenantContext,
+    provider_call_sid: str,
+    channel: str = "voice",
+    campaign_id: Optional[str] = None,
+    lead_id: Optional[str] = None,
+    voice: Optional[str] = None,
+) -> Conversation:
+    """Insert an ``in_progress`` conversation row snapshotting the config used.
+
+    Shared by Call Lead (telephony) and the browser/webconsole path so both
+    record the same per-call config for statistics + billing.
+    """
+    p = tenant.settings.pipeline
+    realtime_provider = p.realtime.provider if (p.mode == "s2s" and p.realtime) else None
+    v = voice or p.tts.voice_id or (p.realtime.voice if p.realtime else None)
+    row = Conversation(
+        id=call_id, tenant_id=tenant.id, campaign_id=campaign_id, lead_id=lead_id,
+        agent_type="voicebot", channel=channel, status="in_progress",
+        pipeline_config=p.model_dump(), provider_call_sid=provider_call_sid,
+        mode=p.mode, stt_provider=p.stt.provider, llm_provider=p.llm.provider,
+        tts_provider=p.tts.provider, realtime_provider=realtime_provider, voice=v,
+        telephony_provider=(p.telephony.provider or None),
+    )
+    session.add(row)
+    await session.commit()
+    return row
 
 
 # --- Outcome persister hook ---------------------------------------------

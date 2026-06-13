@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -176,6 +178,49 @@ async def dev_call_status(call_sid: str) -> dict:
     return item
 
 
+def _parse_iso(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
+
+async def _run_billed_session(tenant, bridge) -> None:
+    """Run a browser-console bridge as a recorded + billed conversation.
+
+    Inserts an in_progress conversation row (channel='webconsole') keyed by a
+    fresh call_id, runs the bridge, then finalizes the row (status/outcome +
+    derived duration + platform cost). Telephony is excluded from the cost (the
+    browser path uses no telephony). Failures here never break the call.
+    """
+    from src.api.call_store import insert_call, record_outcome
+    from src.models.database import get_sessionmaker
+
+    sm = get_sessionmaker()
+    call_id = f"call_{uuid.uuid4().hex[:16]}"
+    try:
+        async with sm() as s:
+            await insert_call(s, call_id=call_id, tenant=tenant,
+                              provider_call_sid=call_id, channel="webconsole")
+    except Exception:  # noqa: BLE001
+        log.exception("webconsole: failed to start call record")
+    try:
+        await bridge.run()
+    finally:
+        payload = getattr(bridge, "_outcome_payload", None) or {}
+        try:
+            async with sm() as s:
+                await record_outcome(
+                    s, call_id, status="ended",
+                    outcome=payload.get("outcome"), summary=payload.get("summary"),
+                    notes=payload.get("notes"),
+                    callback_at=_parse_iso(payload.get("callback_datetime")))
+        except Exception:  # noqa: BLE001
+            log.exception("webconsole: failed to finalize call record")
+
+
 @ws_router.websocket("/voice")
 async def dev_voice_ws(websocket: WebSocket) -> None:
     from src.auth.middleware import tenant_from_slug
@@ -195,7 +240,7 @@ async def dev_voice_ws(websocket: WebSocket) -> None:
 
     bridge = _browser_bridge_factory(websocket, tenant)
     try:
-        await bridge.run()
+        await _run_billed_session(tenant, bridge)
     except WebSocketDisconnect:
         log.info("dev console client disconnected", extra={"tenant": tenant.slug})
     except Exception:  # noqa: BLE001
@@ -229,7 +274,7 @@ async def dev_voice_live_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1011, reason="s2s not configured for tenant")
         return
     try:
-        await bridge.run()
+        await _run_billed_session(tenant, bridge)
     except WebSocketDisconnect:
         log.info("dev console (s2s) client disconnected", extra={"tenant": tenant.slug})
     except Exception:  # noqa: BLE001

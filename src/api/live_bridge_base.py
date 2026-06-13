@@ -55,6 +55,7 @@ class _BaseLiveBridge:
         self._session: IRealtimeSession | None = None
         self._stopped = False
         self._outcome_emitted = False
+        self._outcome_payload = None  # dict set by _emit_outcome; read for billing
         self._last_action: str | None = None
         # per-turn accumulators
         self._user_buf = ""
@@ -188,11 +189,13 @@ class _BaseLiveBridge:
         cb = analysis.callback_datetime
         log.info("call outcome", extra={"outcome": analysis.outcome.value,
                  "source": analysis.analysis_source, "summary": analysis.summary[:200]})
-        await self._deliver_outcome({
-            "type": "outcome", "outcome": analysis.outcome.value,
-            "summary": analysis.summary, "notes": analysis.notes,
-            "callback_datetime": cb.isoformat() if cb else None,
-            "callback_phrase": analysis.callback_phrase, "source": analysis.analysis_source})
+        # Stash for the WS handler to persist to the conversation row (billing).
+        self._outcome_payload = {
+            "outcome": analysis.outcome.value, "summary": analysis.summary,
+            "notes": analysis.notes, "callback_datetime": cb.isoformat() if cb else None,
+            "source": analysis.analysis_source}
+        await self._deliver_outcome({"type": "outcome", **self._outcome_payload,
+                                     "callback_phrase": analysis.callback_phrase})
 
     # --- transport hooks (subclass implements) --------------------------
     async def _inbound_loop(self) -> None:

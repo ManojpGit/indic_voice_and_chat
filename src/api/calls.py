@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.call_store import count_active_calls
+from src.api.call_store import count_active_calls, insert_call
 from src.api.deps import get_db_session
 from src.auth import TenantContext, current_tenant
 from src.interfaces.telephony import CallConfig
@@ -75,6 +75,18 @@ async def call_lead(
         raise HTTPException(
             status_code=409, detail=f"campaign is {campaign.status!r}, not active")
 
+    pipeline = tenant.settings.pipeline
+    tel = pipeline.telephony
+    provider = (tel.provider or "").lower()
+
+    # webconsole tenants are tested in the browser, not dialed out.
+    if provider == "webconsole":
+        raise HTTPException(
+            status_code=409,
+            detail=("this tenant's telephony is 'webconsole' — it has no outbound "
+                    "dialing. Test it from the browser console (/console or "
+                    "/dev/voice); those sessions are still recorded + billed."))
+
     # Enforce the per-tenant concurrency cap.
     cap = tenant.settings.max_concurrent_calls
     if await count_active_calls(session, tenant.id) >= cap:
@@ -82,9 +94,6 @@ async def call_lead(
             status_code=429,
             detail=f"max concurrent calls reached ({cap}); retry when a call ends")
 
-    pipeline = tenant.settings.pipeline
-    tel = pipeline.telephony
-    provider = (tel.provider or "").lower()
     from_number = req.from_number or (tel.outbound_from or {}).get(provider) or tel.from_number
     if not from_number:
         raise HTTPException(status_code=400, detail="no caller-ID configured for this tenant")
@@ -96,7 +105,6 @@ async def call_lead(
     except Exception as e:  # noqa: BLE001 — e.g. missing credentials
         raise HTTPException(status_code=400, detail=f"telephony adapter unavailable: {e}")
 
-    voice = req.voice or pipeline.tts.voice_id or (pipeline.realtime.voice if pipeline.realtime else None)
     cfg = CallConfig(
         to_number=req.to_number.strip(),
         from_number=from_number,
@@ -109,18 +117,10 @@ async def call_lead(
         raise HTTPException(status_code=502, detail=f"call failed: {e}")
 
     call_id = f"call_{uuid.uuid4().hex[:16]}"
-    realtime_provider = pipeline.realtime.provider if (pipeline.mode == "s2s" and pipeline.realtime) else None
-    session.add(Conversation(
-        id=call_id, tenant_id=tenant.id, campaign_id=campaign_id, lead_id=req.lead_id,
-        agent_type="voicebot", channel="voice", status="in_progress",
-        pipeline_config=pipeline.model_dump(), provider_call_sid=call_session.session_id,
-        mode=pipeline.mode,
-        stt_provider=pipeline.stt.provider, llm_provider=pipeline.llm.provider,
-        tts_provider=pipeline.tts.provider, realtime_provider=realtime_provider,
-        voice=voice, telephony_provider=provider,
-    ))
-    await session.commit()
-
+    await insert_call(
+        session, call_id=call_id, tenant=tenant, provider_call_sid=call_session.session_id,
+        channel="voice", campaign_id=campaign_id, lead_id=req.lead_id, voice=req.voice,
+    )
     log.info("call lead placed", extra={
         "tenant": tenant.slug, "campaign": campaign_id, "call_id": call_id,
         "sid": call_session.session_id})
