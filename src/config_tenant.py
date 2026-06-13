@@ -117,6 +117,7 @@ class TenantLLMConfig(BaseModel):
 
 class TenantTTSConfig(BaseModel):
     provider: Optional[str] = None
+    model: Optional[str] = None
     language: Optional[str] = None
     voice_id: Optional[str] = None
     speed: Optional[float] = None

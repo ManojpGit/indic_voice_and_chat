@@ -33,3 +33,4 @@ async def test_console_page_served() -> None:
     assert "/api/v1/tenants" in body
     assert "/api/v1/campaigns" in body
     assert "/api/v1/voices" in body
+    assert "/api/v1/models" in body   # provider/model dropdowns are catalog-driven

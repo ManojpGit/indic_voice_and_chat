@@ -167,6 +167,7 @@ async def register_tenant(
         ),
         tts=TenantTTSConfig(
             provider=req.tts.provider if req.tts else None,
+            model=req.tts.model if req.tts else None,
             language=req.tts.language if req.tts else None,
             voice_id=req.tts.voice_id if req.tts else None,
             speed=req.tts.speed if req.tts else None,

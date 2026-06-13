@@ -115,3 +115,29 @@ async def test_get_voices_unknown_provider_empty(client: AsyncClient) -> None:
     resp = await client.get("/voices", params={"provider": "nope"}, headers=TENANT_HEADERS)
     assert resp.status_code == 200
     assert resp.json()["voices"] == []
+
+
+async def test_get_voices_admin_token_allowed(client: AsyncClient) -> None:
+    # Reference data is readable by admin too (Register UI before a tenant token).
+    resp = await client.get("/voices", params={"provider": "sarvam"}, headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+
+
+async def test_models_with_tenant_token(client: AsyncClient) -> None:
+    resp = await client.get("/models", headers=TENANT_HEADERS)
+    assert resp.status_code == 200
+    models = resp.json()["models"]
+    # gemini exposes multiple variants (flash / flash-lite / pro / …).
+    assert "gemini" in models["llm"]
+    assert len(models["llm"]["gemini"]) >= 2
+    assert any("lite" in m for m in models["llm"]["gemini"])
+    assert "sarvam" in models["tts"]
+    assert "gemini_live" in models["s2s"]
+
+
+async def test_models_with_admin_token(client: AsyncClient) -> None:
+    assert (await client.get("/models", headers=ADMIN_HEADERS)).status_code == 200
+
+
+async def test_models_no_auth_401(client: AsyncClient) -> None:
+    assert (await client.get("/models")).status_code == 401

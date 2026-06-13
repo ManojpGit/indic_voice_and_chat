@@ -61,13 +61,37 @@
         <label>Name <input id="t_name" value="Acme Telecom" /></label>
         <label>Slug (optional) <input id="t_slug" placeholder="auto from name" /></label>
         <label>Mode
-          <select id="t_mode"><option value="layered">layered</option><option value="s2s">s2s</option></select>
+          <select id="t_mode" onchange="syncMode()"><option value="layered">layered</option><option value="s2s">s2s</option></select>
         </label>
         <label>Max concurrent calls <input id="t_max" type="number" value="2" min="1" /></label>
-        <label>STT provider <input id="t_stt" value="groq" /></label>
-        <label>LLM provider <input id="t_llm" value="gemini" /></label>
-        <label>TTS provider <input id="t_tts" value="sarvam" /></label>
-        <label>TTS voice <input id="t_voice" value="anushka" /></label>
+      </div>
+
+      <!-- Layered (cascade) providers + model variants -->
+      <fieldset id="t_layered" style="border:1px solid #334155; border-radius:.4rem; padding:.6rem; margin-bottom:.6rem;">
+        <legend class="hint">Layered (cascade) providers</legend>
+        <div class="grid">
+          <label>STT provider <select id="t_stt_p" onchange="fillModels('stt')"></select></label>
+          <label>STT model <select id="t_stt_m"></select></label>
+          <label>LLM provider <select id="t_llm_p" onchange="fillModels('llm')"></select></label>
+          <label>LLM model <select id="t_llm_m"></select></label>
+          <label>TTS provider <select id="t_tts_p" onchange="fillModels('tts'); fillVoices('tts')"></select></label>
+          <label>TTS model <select id="t_tts_m"></select></label>
+          <label>TTS voice <select id="t_voice"></select></label>
+          <label>Language <input id="t_lang" value="hi-IN" /></label>
+        </div>
+      </fieldset>
+
+      <!-- Realtime (S2S) -->
+      <fieldset id="t_s2s" style="border:1px solid #334155; border-radius:.4rem; padding:.6rem; margin-bottom:.6rem;" hidden>
+        <legend class="hint">Realtime (S2S)</legend>
+        <div class="grid">
+          <label>Realtime provider <select id="t_rt_p" onchange="fillModels('s2s'); fillVoices('s2s')"></select></label>
+          <label>Realtime model <select id="t_rt_m"></select></label>
+          <label>Realtime voice <select id="t_rt_voice"></select></label>
+        </div>
+      </fieldset>
+
+      <div class="grid">
         <label>Telephony provider <input id="t_tel" value="twilio" /></label>
         <label>From number <input id="t_from" value="+15705255679" /></label>
         <label>Webhook base URL <input id="t_webhook" value="https://example.com/api/v1/telephony" /></label>
@@ -75,6 +99,7 @@
         <label>Telephony auth_token <input id="t_tok" placeholder="… (encrypted at rest)" /></label>
       </div>
       <button class="admin" onclick="registerTenant()">POST /tenants</button>
+      <button class="ghost sm" onclick="loadCatalog()">reload provider/model lists</button>
       <span class="hint">Telephony keys are encrypted; STT/LLM/TTS use shared master keys. Returns an API token (shown once).</span>
       <div id="t_out" class="out" hidden></div>
     </div>
@@ -161,6 +186,7 @@ function saveCreds() {
   localStorage.setItem("vox_admin", $("adminToken").value.trim());
   $("credsHint").textContent = "saved";
   setTimeout(() => $("credsHint").textContent = "", 1500);
+  loadCatalog();   // (re)populate provider/model dropdowns with the new token
 }
 const base = () => ($("baseUrl").value.trim() || window.location.origin).replace(/\/$/, "");
 
@@ -168,7 +194,9 @@ const base = () => ($("baseUrl").value.trim() || window.location.origin).replace
 let autoNum = 0;
 async function api(method, path, { body, admin, form } = {}) {
   const headers = {};
-  const token = admin ? $("adminToken").value.trim() : $("tenantToken").value.trim();
+  const tTok = $("tenantToken").value.trim(), aTok = $("adminToken").value.trim();
+  // admin===true -> admin token; 'either' -> admin if present else tenant; else tenant.
+  const token = admin === true ? aTok : (admin === "either" ? (aTok || tTok) : tTok);
   if (token) headers["Authorization"] = "Bearer " + token;
   let payload;
   if (form) { payload = body; }
@@ -204,19 +232,65 @@ function logEntry(id, method, path, status, body, admin) {
 function clearLog() { $("logBody").innerHTML = ""; }
 function show(el, obj) { const e = $(el); e.hidden = false; e.innerHTML = ""; const p = document.createElement("pre"); p.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2); e.appendChild(p); }
 
-// --- 1. Register Tenant ------------------------------------------------
+// --- 1. Register Tenant: catalog-driven provider/model dropdowns -------
+let MODELS = {};  // kind -> provider -> [models]
+
+function setOptions(sel, values, selected) {
+  sel.innerHTML = "";
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = v;
+    if (v === selected) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+function fillModels(kind) {
+  const map = { stt: ["t_stt_p", "t_stt_m"], llm: ["t_llm_p", "t_llm_m"],
+                tts: ["t_tts_p", "t_tts_m"], s2s: ["t_rt_p", "t_rt_m"] }[kind];
+  const provider = $(map[0]).value;
+  setOptions($(map[1]), (MODELS[kind] && MODELS[kind][provider]) || []);
+}
+async function fillVoices(which) {
+  const prov = which === "s2s" ? $("t_rt_p").value : $("t_tts_p").value;
+  const lang = which === "s2s" ? "hi-IN" : ($("t_lang").value || "hi-IN");
+  const r = await api("GET", `/api/v1/voices?provider=${encodeURIComponent(prov)}&language=${encodeURIComponent(lang)}`, { admin: "either" });
+  const ids = (r.ok && r.json.voices ? r.json.voices : []).map(v => v.voice_id);
+  setOptions($(which === "s2s" ? "t_rt_voice" : "t_voice"), ids);
+}
+function syncMode() {
+  const s2s = $("t_mode").value === "s2s";
+  $("t_s2s").hidden = !s2s; $("t_layered").hidden = s2s;
+}
+async function loadCatalog() {
+  const r = await api("GET", "/api/v1/models", { admin: "either" });
+  if (!r.ok) { $("credsHint").textContent = "could not load model catalog (enter a token)"; return; }
+  MODELS = r.json.models || {};
+  setOptions($("t_stt_p"), Object.keys(MODELS.stt || {}), "groq");
+  setOptions($("t_llm_p"), Object.keys(MODELS.llm || {}), "gemini");
+  setOptions($("t_tts_p"), Object.keys(MODELS.tts || {}), "sarvam");
+  setOptions($("t_rt_p"),  Object.keys(MODELS.s2s || {}), "gemini_live");
+  fillModels("stt"); fillModels("llm"); fillModels("tts"); fillModels("s2s");
+  await fillVoices("tts"); await fillVoices("s2s");
+  syncMode();
+}
+
 async function registerTenant() {
+  const mode = $("t_mode").value;
   const body = {
-    name: $("t_name").value, mode: $("t_mode").value,
+    name: $("t_name").value, mode,
     max_concurrent_calls: Number($("t_max").value) || 1,
-    stt: $("t_stt").value ? { provider: $("t_stt").value } : undefined,
-    llm: $("t_llm").value ? { provider: $("t_llm").value } : undefined,
-    tts: $("t_tts").value ? { provider: $("t_tts").value, voice_id: $("t_voice").value } : undefined,
     telephony: {
       provider: $("t_tel").value, from_number: $("t_from").value,
       webhook_base_url: $("t_webhook").value, keys: {},
     },
   };
+  if (mode === "s2s") {
+    body.realtime = { provider: $("t_rt_p").value, model: $("t_rt_m").value, voice: $("t_rt_voice").value, language_code: "hi-IN" };
+  } else {
+    body.stt = { provider: $("t_stt_p").value, model: $("t_stt_m").value, language: $("t_lang").value };
+    body.llm = { provider: $("t_llm_p").value, model: $("t_llm_m").value };
+    body.tts = { provider: $("t_tts_p").value, model: $("t_tts_m").value, voice_id: $("t_voice").value, language: $("t_lang").value };
+  }
   if ($("t_slug").value.trim()) body.slug = $("t_slug").value.trim();
   if ($("t_sid").value.trim()) body.telephony.keys.account_sid = $("t_sid").value.trim();
   if ($("t_tok").value.trim()) body.telephony.keys.auth_token = $("t_tok").value.trim();
@@ -296,6 +370,8 @@ async function autoPoll(id) {
 }
 
 loadCreds();
+syncMode();
+loadCatalog();
 </script>
 </body>
 </html>

@@ -59,8 +59,8 @@ def _body(**over):
         "name": "Acme Telecom",
         "max_concurrent_calls": 3,
         "stt": {"provider": "groq", "model": "whisper-large-v3"},
-        "llm": {"provider": "gemini", "model": "gemini-2.5-flash"},
-        "tts": {"provider": "sarvam", "voice_id": "anushka", "language": "hi-IN"},
+        "llm": {"provider": "gemini", "model": "gemini-2.5-flash-lite"},
+        "tts": {"provider": "sarvam", "model": "bulbul:v3", "voice_id": "anushka", "language": "hi-IN"},
         "telephony": {
             "provider": "twilio",
             "from_number": "+15705255679",
@@ -118,6 +118,16 @@ async def test_register_telephony_secret_resolves_via_context(ctx) -> None:
     assert new_ctx.secret(tel.auth_token_env) == "tok-secret"
     # STT api_key_env points at the shared master env var name, not stored per tenant.
     assert new_ctx.settings.pipeline.stt.api_key_env == "GROQ_API_KEY"
+
+
+async def test_register_persists_model_choices(ctx) -> None:
+    client, resolver, _ = ctx
+    token = (await client.post("/tenants", json=_body(), headers=ADMIN_HEADERS)).json()["api_token"]
+    new_ctx = await resolver.resolve_by_token(hash_api_token(token))
+    p = new_ctx.settings.pipeline
+    assert p.stt.model == "whisper-large-v3"
+    assert p.llm.model == "gemini-2.5-flash-lite"   # a non-default variant survives
+    assert p.tts.model == "bulbul:v3"               # TTS model now persisted too
 
 
 async def test_register_duplicate_slug_409(ctx) -> None:

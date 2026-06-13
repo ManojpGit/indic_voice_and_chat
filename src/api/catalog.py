@@ -11,18 +11,30 @@ pricing changes.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db_session
 from src.auth import TenantContext, current_tenant
-from src.auth.middleware import require_admin
+from src.auth.middleware import optional_tenant, require_admin
 from src.models.tenant import ProviderCost
+from src.providers.model_catalog import list_models
 from src.providers.voice_catalog import list_voices
 
 router = APIRouter(tags=["catalog"])
+
+
+async def catalog_read_auth(
+    request: Request, tenant: TenantContext | None = Depends(optional_tenant)
+) -> None:
+    """Allow a valid tenant **or** admin bearer. Used for non-sensitive
+    reference data (models, voices) the admin Register UI needs before a tenant
+    token exists."""
+    if tenant is not None:
+        return
+    await require_admin(request)  # raises 401/403 if not a valid admin token
 
 
 # --- Schemas ------------------------------------------------------------
@@ -90,11 +102,25 @@ async def update_provider_cost(
     return ProviderCostItem(kind=kind, provider=provider, cost_per_min=req.cost_per_min)
 
 
+class ModelsResponse(BaseModel):
+    # kind -> provider -> [model ids]; first per list is the recommended default.
+    models: dict[str, dict[str, list[str]]]
+
+
+@router.get("/models", response_model=ModelsResponse)
+async def get_models(_: None = Depends(catalog_read_auth)) -> ModelsResponse:
+    """Selectable provider + model variants per kind (stt/llm/tts/s2s).
+
+    Drives the Register Tenant UI's provider/model dropdowns.
+    """
+    return ModelsResponse(models=list_models())
+
+
 @router.get("/voices", response_model=VoicesResponse)
 async def get_voices(
     provider: str = Query(..., description="sarvam | gemini_live"),
     language: str = Query("hi-IN", description="BCP-47 language tag (TTS only)"),
-    tenant: TenantContext = Depends(current_tenant),
+    _: None = Depends(catalog_read_auth),
 ) -> VoicesResponse:
     """Return the available voices for a provider (+ language for TTS)."""
     voices = list_voices(provider, language)
