@@ -1,12 +1,12 @@
-<!-- static/api_console.html — thin UI over the public /api/v1 endpoints.
-     Every action here is a real API call (shown in the log on the right), so
-     driving the UI exercises the same API a CRM would use. No build step. -->
+<!-- static/api_console.html — TENANT console: campaigns, calls, voices/costs.
+     Tenant bearer only. Every button is a live /api/v1 call (admin tasks like
+     registering tenants live on /admin). -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Vox API Console</title>
+<title>Vox Tenant Console</title>
 <style>
   :root { color-scheme: dark; }
   body { font-family: system-ui, sans-serif; margin:0; background:#0f172a; color:#e2e8f0; }
@@ -19,15 +19,12 @@
          background:#0b1220; border:1px solid #1f2937; border-radius:.5rem; padding:.6rem; }
   .card { background:#1e293b; border-radius:.5rem; padding:.85rem 1rem; }
   .card h2 { font-size:.95rem; margin:.1rem 0 .7rem; color:#cbd5e1; }
-  .badge { font-size:.65rem; padding:.1rem .4rem; border-radius:.3rem; background:#334155; color:#cbd5e1; margin-left:.4rem; vertical-align:middle; }
-  .badge.admin { background:#7c2d12; color:#fed7aa; }
   label { font-size:.8rem; color:#cbd5e1; display:flex; flex-direction:column; gap:.2rem; }
   input, select, textarea { background:#0b1220; color:#e2e8f0; border:1px solid #334155; border-radius:.35rem; padding:.4rem; font:inherit; }
   textarea { min-height:64px; font-family:ui-monospace,monospace; font-size:.8rem; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.6rem; margin-bottom:.7rem; }
   button { padding:.45rem .9rem; border-radius:.4rem; border:0; cursor:pointer; font-weight:600; background:#3b82f6; color:#fff; }
   button.ghost { background:#334155; color:#e2e8f0; }
-  button.admin { background:#ea580c; }
   button.sm { padding:.25rem .5rem; font-size:.75rem; }
   .hint { color:#94a3b8; font-size:.75rem; }
   table { width:100%; border-collapse:collapse; font-size:.8rem; }
@@ -37,15 +34,15 @@
   .entry .ln { font-family:ui-monospace,monospace; font-size:.75rem; }
   .ok { color:#86efac; } .err { color:#fca5a5; } .muted { color:#94a3b8; }
   .out { margin-top:.5rem; background:#0b1220; border:1px solid #243042; border-radius:.35rem; padding:.5rem; }
+  a { color:#93c5fd; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Vox API Console <span class="hint">— a thin UI; every button is a live <code>/api/v1</code> call</span></h1>
+  <h1>Vox Tenant Console <span class="hint">— campaigns &amp; calls for your tenant · tenant onboarding lives on <a href="/admin">/admin</a></span></h1>
   <div class="creds">
     <label>API base URL <input id="baseUrl" style="width:16rem" placeholder="(same origin)" /></label>
-    <label>Tenant token <input id="tenantToken" style="width:14rem" placeholder="Bearer for tenant routes" /></label>
-    <label>Admin token <input id="adminToken" style="width:14rem" placeholder="Bearer for admin routes" /></label>
+    <label>Tenant token <input id="tenantToken" style="width:18rem" placeholder="Bearer issued at registration" /></label>
     <button class="ghost sm" onclick="saveCreds()">Save</button>
     <span id="credsHint" class="hint"></span>
   </div>
@@ -54,64 +51,12 @@
 <div class="layout">
   <div class="cards">
 
-    <!-- 1. Register Tenant -->
+    <!-- Reference: providers + voices -->
     <div class="card">
-      <h2>Register Tenant <span class="badge admin">admin</span></h2>
-      <div class="grid">
-        <label>Name <input id="t_name" value="Acme Telecom" /></label>
-        <label>Slug (optional) <input id="t_slug" placeholder="auto from name" /></label>
-        <label>Mode
-          <select id="t_mode" onchange="syncMode()"><option value="layered">layered</option><option value="s2s">s2s</option></select>
-        </label>
-        <label>Max concurrent calls <input id="t_max" type="number" value="2" min="1" /></label>
-      </div>
-
-      <!-- Layered (cascade) providers + model variants -->
-      <fieldset id="t_layered" style="border:1px solid #334155; border-radius:.4rem; padding:.6rem; margin-bottom:.6rem;">
-        <legend class="hint">Layered (cascade) providers</legend>
-        <div class="grid">
-          <label>STT provider <select id="t_stt_p" onchange="fillModels('stt')"></select></label>
-          <label>STT model <select id="t_stt_m"></select></label>
-          <label>LLM provider <select id="t_llm_p" onchange="fillModels('llm')"></select></label>
-          <label>LLM model <select id="t_llm_m"></select></label>
-          <label>TTS provider <select id="t_tts_p" onchange="fillModels('tts'); fillVoices('tts')"></select></label>
-          <label>TTS model <select id="t_tts_m"></select></label>
-          <label>TTS voice <select id="t_voice"></select></label>
-          <label>Language <input id="t_lang" value="hi-IN" /></label>
-        </div>
-      </fieldset>
-
-      <!-- Realtime (S2S) -->
-      <fieldset id="t_s2s" style="border:1px solid #334155; border-radius:.4rem; padding:.6rem; margin-bottom:.6rem;" hidden>
-        <legend class="hint">Realtime (S2S)</legend>
-        <div class="grid">
-          <label>Realtime provider <select id="t_rt_p" onchange="fillModels('s2s'); fillVoices('s2s')"></select></label>
-          <label>Realtime model <select id="t_rt_m"></select></label>
-          <label>Realtime voice <select id="t_rt_voice"></select></label>
-        </div>
-      </fieldset>
-
-      <div class="grid">
-        <label>Telephony provider <input id="t_tel" value="twilio" /></label>
-        <label>From number <input id="t_from" value="+15705255679" /></label>
-        <label>Webhook base URL <input id="t_webhook" value="https://example.com/api/v1/telephony" /></label>
-        <label>Telephony account_sid <input id="t_sid" placeholder="AC… (encrypted at rest)" /></label>
-        <label>Telephony auth_token <input id="t_tok" placeholder="… (encrypted at rest)" /></label>
-      </div>
-      <button class="admin" onclick="registerTenant()">POST /tenants</button>
-      <button class="ghost sm" onclick="loadCatalog()">reload provider/model lists</button>
-      <span class="hint">Telephony keys are encrypted; STT/LLM/TTS use shared master keys. Returns an API token (shown once).</span>
-      <div id="t_out" class="out" hidden></div>
-    </div>
-
-    <!-- 2. Providers + Voices -->
-    <div class="card">
-      <h2>Provider costs &amp; voices</h2>
-      <div class="row" style="display:flex; gap:.6rem; flex-wrap:wrap; align-items:flex-end;">
+      <h2>Reference</h2>
+      <div style="display:flex; gap:.6rem; flex-wrap:wrap; align-items:flex-end;">
         <button onclick="loadProviders()">GET /providers</button>
-        <label>Voice provider
-          <select id="v_provider"><option>sarvam</option><option>gemini_live</option></select>
-        </label>
+        <label>Voice provider <select id="v_provider"><option>sarvam</option><option>gemini_live</option></select></label>
         <label>Language <input id="v_lang" value="hi-IN" style="width:6rem" /></label>
         <button class="ghost" onclick="loadVoices()">GET /voices</button>
       </div>
@@ -119,16 +64,14 @@
       <div id="voice_out" class="out" hidden></div>
     </div>
 
-    <!-- 3. Campaigns -->
+    <!-- Campaigns -->
     <div class="card">
-      <h2>Campaigns <span class="badge">tenant</span></h2>
+      <h2>Campaigns</h2>
       <div class="grid">
         <label>Name <input id="c_name" value="Plan B Launch" /></label>
         <label>Campaign id (optional) <input id="c_id" placeholder="auto" /></label>
       </div>
-      <label>Script (campaign YAML, optional)
-        <textarea id="c_script" placeholder="agent: ..."></textarea>
-      </label>
+      <label>Script (campaign YAML, optional) <textarea id="c_script" placeholder="agent: ..."></textarea></label>
       <div style="margin-top:.6rem; display:flex; gap:.5rem; flex-wrap:wrap;">
         <button onclick="createCampaign()">POST /campaigns</button>
         <button class="ghost" onclick="listCampaigns()">GET /campaigns</button>
@@ -142,9 +85,9 @@
       <div id="camp_out" class="out" hidden></div>
     </div>
 
-    <!-- 4. Call Lead -->
+    <!-- Call Lead -->
     <div class="card">
-      <h2>Call Lead <span class="badge">tenant</span></h2>
+      <h2>Call Lead</h2>
       <div class="grid">
         <label>Campaign id <input id="call_camp" placeholder="camp_…" /></label>
         <label>To number <input id="call_to" value="+918618795697" /></label>
@@ -161,7 +104,6 @@
     </div>
   </div>
 
-  <!-- API log -->
   <div class="log">
     <div style="display:flex; justify-content:space-between; align-items:center;">
       <strong style="font-size:.85rem;">API call log</strong>
@@ -173,157 +115,56 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-
-// --- creds (persisted) -------------------------------------------------
 function loadCreds() {
-  $("baseUrl").value     = localStorage.getItem("vox_base")  || "";
-  $("tenantToken").value = localStorage.getItem("vox_tok")   || "";
-  $("adminToken").value  = localStorage.getItem("vox_admin") || "";
+  $("baseUrl").value     = localStorage.getItem("vox_base") || "";
+  $("tenantToken").value = localStorage.getItem("vox_tok")  || "";
 }
 function saveCreds() {
-  localStorage.setItem("vox_base",  $("baseUrl").value.trim());
-  localStorage.setItem("vox_tok",   $("tenantToken").value.trim());
-  localStorage.setItem("vox_admin", $("adminToken").value.trim());
-  $("credsHint").textContent = "saved";
-  setTimeout(() => $("credsHint").textContent = "", 1500);
-  loadCatalog();   // (re)populate provider/model dropdowns with the new token
+  localStorage.setItem("vox_base", $("baseUrl").value.trim());
+  localStorage.setItem("vox_tok",  $("tenantToken").value.trim());
+  $("credsHint").textContent = "saved"; setTimeout(() => $("credsHint").textContent = "", 1500);
 }
 const base = () => ($("baseUrl").value.trim() || window.location.origin).replace(/\/$/, "");
 
-// --- core API helper: every call is logged ----------------------------
 let autoNum = 0;
-async function api(method, path, { body, admin, form } = {}) {
+async function api(method, path, { body, form } = {}) {
   const headers = {};
-  const tTok = $("tenantToken").value.trim(), aTok = $("adminToken").value.trim();
-  // admin===true -> admin token; 'either' -> admin if present else tenant; else tenant.
-  const token = admin === true ? aTok : (admin === "either" ? (aTok || tTok) : tTok);
+  const token = $("tenantToken").value.trim();
   if (token) headers["Authorization"] = "Bearer " + token;
   let payload;
-  if (form) { payload = body; }
+  if (form) payload = body;
   else if (body !== undefined) { headers["Content-Type"] = "application/json"; payload = JSON.stringify(body); }
-
-  const url = base() + path;
   const id = ++autoNum;
-  let res, text, json;
   try {
-    res = await fetch(url, { method, headers, body: payload });
-    text = await res.text();
-    try { json = JSON.parse(text); } catch { json = text; }
-    logEntry(id, method, path, res.status, json, admin);
+    const res = await fetch(base() + path, { method, headers, body: payload });
+    const text = await res.text(); let json; try { json = JSON.parse(text); } catch { json = text; }
+    logEntry(id, method, path, res.status, json);
     return { ok: res.ok, status: res.status, json };
-  } catch (e) {
-    logEntry(id, method, path, "ERR", String(e), admin);
-    return { ok: false, status: 0, json: String(e) };
-  }
+  } catch (e) { logEntry(id, method, path, "ERR", String(e)); return { ok: false, status: 0, json: String(e) }; }
 }
-
-function logEntry(id, method, path, status, body, admin) {
-  const div = document.createElement("div");
-  div.className = "entry";
+function logEntry(id, method, path, status, body) {
+  const div = document.createElement("div"); div.className = "entry";
   const ok = status !== "ERR" && status < 400;
-  div.innerHTML = `<div class="ln"><span class="${ok ? 'ok' : 'err'}">${status}</span> `
-    + `<strong>${method}</strong> ${path}${admin ? ' <span class="badge admin">admin</span>' : ''}</div>`;
-  const pre = document.createElement("pre");
-  pre.className = "muted";
+  div.innerHTML = `<div class="ln"><span class="${ok ? 'ok' : 'err'}">${status}</span> <strong>${method}</strong> ${path}</div>`;
+  const pre = document.createElement("pre"); pre.className = "muted";
   pre.textContent = typeof body === "string" ? body : JSON.stringify(body, null, 2);
-  div.appendChild(pre);
-  $("logBody").prepend(div);
+  div.appendChild(pre); $("logBody").prepend(div);
 }
 function clearLog() { $("logBody").innerHTML = ""; }
 function show(el, obj) { const e = $(el); e.hidden = false; e.innerHTML = ""; const p = document.createElement("pre"); p.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2); e.appendChild(p); }
 
-// --- 1. Register Tenant: catalog-driven provider/model dropdowns -------
-let MODELS = {};  // kind -> provider -> [models]
-
-function setOptions(sel, values, selected) {
-  sel.innerHTML = "";
-  for (const v of values) {
-    const o = document.createElement("option");
-    o.value = v; o.textContent = v;
-    if (v === selected) o.selected = true;
-    sel.appendChild(o);
-  }
-}
-function fillModels(kind) {
-  const map = { stt: ["t_stt_p", "t_stt_m"], llm: ["t_llm_p", "t_llm_m"],
-                tts: ["t_tts_p", "t_tts_m"], s2s: ["t_rt_p", "t_rt_m"] }[kind];
-  const provider = $(map[0]).value;
-  setOptions($(map[1]), (MODELS[kind] && MODELS[kind][provider]) || []);
-}
-async function fillVoices(which) {
-  const prov = which === "s2s" ? $("t_rt_p").value : $("t_tts_p").value;
-  const lang = which === "s2s" ? "hi-IN" : ($("t_lang").value || "hi-IN");
-  const r = await api("GET", `/api/v1/voices?provider=${encodeURIComponent(prov)}&language=${encodeURIComponent(lang)}`, { admin: "either" });
-  const ids = (r.ok && r.json.voices ? r.json.voices : []).map(v => v.voice_id);
-  setOptions($(which === "s2s" ? "t_rt_voice" : "t_voice"), ids);
-}
-function syncMode() {
-  const s2s = $("t_mode").value === "s2s";
-  $("t_s2s").hidden = !s2s; $("t_layered").hidden = s2s;
-}
-async function loadCatalog() {
-  const r = await api("GET", "/api/v1/models", { admin: "either" });
-  if (!r.ok) { $("credsHint").textContent = "could not load model catalog (enter a token)"; return; }
-  MODELS = r.json.models || {};
-  setOptions($("t_stt_p"), Object.keys(MODELS.stt || {}), "groq");
-  setOptions($("t_llm_p"), Object.keys(MODELS.llm || {}), "gemini");
-  setOptions($("t_tts_p"), Object.keys(MODELS.tts || {}), "sarvam");
-  setOptions($("t_rt_p"),  Object.keys(MODELS.s2s || {}), "gemini_live");
-  fillModels("stt"); fillModels("llm"); fillModels("tts"); fillModels("s2s");
-  await fillVoices("tts"); await fillVoices("s2s");
-  syncMode();
-}
-
-async function registerTenant() {
-  const mode = $("t_mode").value;
-  const body = {
-    name: $("t_name").value, mode,
-    max_concurrent_calls: Number($("t_max").value) || 1,
-    telephony: {
-      provider: $("t_tel").value, from_number: $("t_from").value,
-      webhook_base_url: $("t_webhook").value, keys: {},
-    },
-  };
-  if (mode === "s2s") {
-    body.realtime = { provider: $("t_rt_p").value, model: $("t_rt_m").value, voice: $("t_rt_voice").value, language_code: "hi-IN" };
-  } else {
-    body.stt = { provider: $("t_stt_p").value, model: $("t_stt_m").value, language: $("t_lang").value };
-    body.llm = { provider: $("t_llm_p").value, model: $("t_llm_m").value };
-    body.tts = { provider: $("t_tts_p").value, model: $("t_tts_m").value, voice_id: $("t_voice").value, language: $("t_lang").value };
-  }
-  if ($("t_slug").value.trim()) body.slug = $("t_slug").value.trim();
-  if ($("t_sid").value.trim()) body.telephony.keys.account_sid = $("t_sid").value.trim();
-  if ($("t_tok").value.trim()) body.telephony.keys.auth_token = $("t_tok").value.trim();
-  const r = await api("POST", "/api/v1/tenants", { body, admin: true });
-  show("t_out", r.json);
-  if (r.ok && r.json.api_token) {
-    $("tenantToken").value = r.json.api_token; saveCreds();
-    $("credsHint").textContent = "tenant token set from new registration";
-  }
-}
-
-// --- 2. Providers + Voices --------------------------------------------
 async function loadProviders() {
   const r = await api("GET", "/api/v1/providers");
   const el = $("prov_out"); el.hidden = false;
   if (!r.ok) { show("prov_out", r.json); return; }
-  const rows = (r.json.providers || []).map(p =>
-    `<tr><td>${p.kind}</td><td>${p.provider}</td>
-       <td><input id="pc_${p.kind}_${p.provider}" value="${p.cost_per_min}" style="width:6rem"></td>
-       <td><button class="admin sm" onclick="updateCost('${p.kind}','${p.provider}')">PUT</button></td></tr>`).join("");
-  el.innerHTML = `<table><tr><th>kind</th><th>provider</th><th>cost/min</th><th class="hint">admin</th></tr>${rows}</table>`;
-}
-async function updateCost(kind, provider) {
-  const v = Number($(`pc_${kind}_${provider}`).value);
-  const r = await api("PUT", `/api/v1/providers/${kind}/${provider}`, { body: { cost_per_min: v }, admin: true });
-  if (r.ok) loadProviders();
+  el.innerHTML = `<table><tr><th>kind</th><th>provider</th><th>cost/min</th></tr>` +
+    (r.json.providers || []).map(p => `<tr><td>${p.kind}</td><td>${p.provider}</td><td>${p.cost_per_min}</td></tr>`).join("") + `</table>`;
 }
 async function loadVoices() {
   const r = await api("GET", `/api/v1/voices?provider=${encodeURIComponent($("v_provider").value)}&language=${encodeURIComponent($("v_lang").value)}`);
   show("voice_out", r.json);
 }
 
-// --- 3. Campaigns ------------------------------------------------------
 async function createCampaign() {
   const body = { name: $("c_name").value, script: $("c_script").value };
   if ($("c_id").value.trim()) body.id = $("c_id").value.trim();
@@ -343,7 +184,6 @@ async function uploadLeads() {
   show("camp_out", (await api("POST", `/api/v1/campaigns/${id}/leads`, { form: true, body: fd })).json);
 }
 
-// --- 4. Call Lead ------------------------------------------------------
 async function callLead() {
   const id = $("call_camp").value.trim(); if (!id) return alert("campaign id?");
   const body = { to_number: $("call_to").value.trim() };
@@ -351,10 +191,7 @@ async function callLead() {
   if ($("call_voice").value.trim()) body.voice = $("call_voice").value.trim();
   const r = await api("POST", `/api/v1/campaigns/${id}/calls`, { body });
   show("call_out", r.json);
-  if (r.ok && r.json.call_id) {
-    $("call_id").value = r.json.call_id;
-    if ($("call_autopoll").checked) autoPoll(r.json.call_id);
-  }
+  if (r.ok && r.json.call_id) { $("call_id").value = r.json.call_id; if ($("call_autopoll").checked) autoPoll(r.json.call_id); }
 }
 async function pollCall() {
   const id = $("call_id").value.trim(); if (!id) return alert("call id?");
@@ -370,8 +207,6 @@ async function autoPoll(id) {
 }
 
 loadCreds();
-syncMode();
-loadCatalog();
 </script>
 </body>
 </html>

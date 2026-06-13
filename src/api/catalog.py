@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db_session
-from src.auth import TenantContext, current_tenant
+from src.auth import TenantContext
 from src.auth.middleware import optional_tenant, require_admin
 from src.models.tenant import ProviderCost
 from src.providers.model_catalog import list_models
@@ -26,12 +26,11 @@ from src.providers.voice_catalog import list_voices
 router = APIRouter(tags=["catalog"])
 
 
-async def catalog_read_auth(
+async def tenant_or_admin(
     request: Request, tenant: TenantContext | None = Depends(optional_tenant)
 ) -> None:
-    """Allow a valid tenant **or** admin bearer. Used for non-sensitive
-    reference data (models, voices) the admin Register UI needs before a tenant
-    token exists."""
+    """Allow a valid tenant **or** admin bearer (e.g. the cost catalog, which
+    both the tenant page and the admin page list)."""
     if tenant is not None:
         return
     await require_admin(request)  # raises 401/403 if not a valid admin token
@@ -71,7 +70,7 @@ class VoicesResponse(BaseModel):
 @router.get("/providers", response_model=ProvidersResponse)
 async def list_providers(
     session: AsyncSession = Depends(get_db_session),
-    tenant: TenantContext = Depends(current_tenant),
+    _: None = Depends(tenant_or_admin),
 ) -> ProvidersResponse:
     """List every provider and its current cost/min, ordered by kind then name."""
     rows = (await session.execute(
@@ -108,10 +107,11 @@ class ModelsResponse(BaseModel):
 
 
 @router.get("/models", response_model=ModelsResponse)
-async def get_models(_: None = Depends(catalog_read_auth)) -> ModelsResponse:
+async def get_models() -> ModelsResponse:
     """Selectable provider + model variants per kind (stt/llm/tts/s2s).
 
-    Drives the Register Tenant UI's provider/model dropdowns.
+    Public reference data (model ids only) — drives the Register UI's
+    provider/model dropdowns, which must populate before any token is entered.
     """
     return ModelsResponse(models=list_models())
 
@@ -120,7 +120,6 @@ async def get_models(_: None = Depends(catalog_read_auth)) -> ModelsResponse:
 async def get_voices(
     provider: str = Query(..., description="sarvam | gemini_live"),
     language: str = Query("hi-IN", description="BCP-47 language tag (TTS only)"),
-    _: None = Depends(catalog_read_auth),
 ) -> VoicesResponse:
     """Return the available voices for a provider (+ language for TTS)."""
     voices = list_voices(provider, language)

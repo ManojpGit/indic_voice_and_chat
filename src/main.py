@@ -212,12 +212,21 @@ _STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 
 @app.get("/console", include_in_schema=False)
 async def api_console() -> FileResponse:
-    """A thin browser UI over the /api/v1 endpoints (uses the API itself).
+    """Tenant browser UI (campaigns, calls, reference) over /api/v1.
 
     Always available — it bypasses no auth: it just calls the API with the
-    bearer tokens the operator pastes in, so the API enforces access as usual.
+    tenant bearer the operator pastes in, so the API enforces access as usual.
     """
     return FileResponse(_STATIC_DIR / "api_console.html", media_type="text/html")
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_console() -> FileResponse:
+    """Admin browser UI (register tenants, maintain provider costs) over /api/v1.
+
+    Uses an admin bearer pasted in by the operator — bypasses no auth.
+    """
+    return FileResponse(_STATIC_DIR / "admin_console.html", media_type="text/html")
 
 
 @app.get("/health")
