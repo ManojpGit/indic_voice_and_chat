@@ -15,9 +15,23 @@ Lifespan-based startup:
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# Load .env into the process environment for local runs, so settings read via
+# os.environ (VOX_SECRET_KEY, VOX_ADMIN_TOKENS, TENANT_*_API_TOKENS, …) work
+# without a manual `source .env`. override=False → real env (e.g. Northflank)
+# always wins, and a missing file is a no-op. Skipped under pytest so test
+# fixtures control the environment.
+if "pytest" not in sys.modules:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=False)
+    except ImportError:
+        pass
 
 import redis.asyncio as redis_async
 from fastapi import FastAPI
