@@ -194,6 +194,7 @@ function setOptions(sel, values, selected) {
   sel.innerHTML = "";
   for (const v of values) { const o = document.createElement("option"); o.value = v; o.textContent = v; if (v === selected) o.selected = true; sel.appendChild(o); }
 }
+// webconsole = browser test path (no real telephony / no cost); always offered.
 const TEL_FALLBACK = ["twilio", "exotel", "stringee", "infobip", "telnyx"];
 
 function fillModelsFor(kind) {
@@ -233,8 +234,13 @@ function recompute() {
     if (active && c !== null) total += c;
   }
   // Telephony: tentative (tenant's own key) — shown but never in the total.
-  const tc = rowCost("telephony");
-  $("cost_telephony").textContent = tc === null ? "tentative" : "~" + fmt(tc);
+  // webconsole is the browser test path: no telephony cost at all.
+  if ($("sel_telephony").value === "webconsole") {
+    $("cost_telephony").textContent = "n/a (browser test)";
+  } else {
+    const tc = rowCost("telephony");
+    $("cost_telephony").textContent = tc === null ? "tentative" : "~" + fmt(tc);
+  }
   $("cost_total").textContent = fmt(total);
 }
 function syncMode() {
@@ -264,9 +270,10 @@ async function loadCosts() {
     const byProv = (COSTS[p.kind] = COSTS[p.kind] || {});
     (byProv[p.provider] = byProv[p.provider] || {})[p.model || ""] = p.cost_per_min;
   }
-  // telephony dropdown options come from the catalog (fallback to known set)
-  const tels = Object.keys(COSTS.telephony || {});
-  setOptions($("sel_telephony"), tels.length ? tels : TEL_FALLBACK, "twilio");
+  // telephony options: webconsole (browser test) + catalog providers (fallback set)
+  const cat = Object.keys(COSTS.telephony || {});
+  const tels = Array.from(new Set(["webconsole", ...(cat.length ? cat : TEL_FALLBACK)]));
+  setOptions($("sel_telephony"), tels, "twilio");
   $("cost_note").textContent = r.ok
     ? "Per-model rates from the cost catalog (live) — total updates with the model dropdowns."
     : "Could not load rates — enter your admin token + Save.";

@@ -18,6 +18,7 @@ pipeline:
     api_key_env: TENANT_EXAMPLE_GROQ_KEY
   tts:
     provider: sarvam
+    model: bulbul:v2
     language: hi-IN
     voice_id: anushka
     api_key_env: TENANT_EXAMPLE_SARVAM_KEY
