@@ -187,13 +187,16 @@ def _parse_iso(value):
         return None
 
 
-async def _run_billed_session(tenant, bridge) -> None:
+async def _run_billed_session(tenant, bridge, *, mode: str) -> None:
     """Run a browser-console bridge as a recorded + billed conversation.
 
     Inserts an in_progress conversation row (channel='webconsole') keyed by a
     fresh call_id, runs the bridge, then finalizes the row (status/outcome +
-    derived duration + platform cost). Telephony is excluded from the cost (the
-    browser path uses no telephony). Failures here never break the call.
+    derived duration + platform cost). ``mode`` is the actual path used
+    ('s2s' for the live console, 'layered' for the cascade console) so the cost
+    is billed correctly even when it differs from the tenant default. Telephony
+    is excluded from the cost (the browser path uses no telephony). Failures here
+    never break the call.
     """
     from src.api.call_store import insert_call, record_outcome
     from src.models.database import get_sessionmaker
@@ -203,7 +206,7 @@ async def _run_billed_session(tenant, bridge) -> None:
     try:
         async with sm() as s:
             await insert_call(s, call_id=call_id, tenant=tenant,
-                              provider_call_sid=call_id, channel="webconsole")
+                              provider_call_sid=call_id, channel="webconsole", mode=mode)
     except Exception:  # noqa: BLE001
         log.exception("webconsole: failed to start call record")
     try:
@@ -240,7 +243,7 @@ async def dev_voice_ws(websocket: WebSocket) -> None:
 
     bridge = _browser_bridge_factory(websocket, tenant)
     try:
-        await _run_billed_session(tenant, bridge)
+        await _run_billed_session(tenant, bridge, mode="layered")
     except WebSocketDisconnect:
         log.info("dev console client disconnected", extra={"tenant": tenant.slug})
     except Exception:  # noqa: BLE001
@@ -274,7 +277,7 @@ async def dev_voice_live_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1011, reason="s2s not configured for tenant")
         return
     try:
-        await _run_billed_session(tenant, bridge)
+        await _run_billed_session(tenant, bridge, mode="s2s")
     except WebSocketDisconnect:
         log.info("dev console (s2s) client disconnected", extra={"tenant": tenant.slug})
     except Exception:  # noqa: BLE001

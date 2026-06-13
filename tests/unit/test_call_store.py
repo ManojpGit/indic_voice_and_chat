@@ -131,6 +131,30 @@ async def test_insert_call_snapshots_config(sm):
     assert got.pipeline_config["tts"]["model"] == "bulbul:v2"
 
 
+async def test_insert_call_mode_override_records_s2s(sm):
+    # A layered-default tenant run through the S2S browser path must be recorded
+    # as s2s (with the realtime provider), not layered — drives correct cost.
+    from src.api.call_store import insert_call
+    from src.auth.context import TenantContext
+    from src.config_tenant import (
+        TenantPipelineConfig, TenantRealtimeConfig, TenantSettings, TenantTTSConfig,
+    )
+    ctx = TenantContext(settings=TenantSettings(
+        id="t1", slug="t1", name="T1",
+        pipeline=TenantPipelineConfig(
+            mode="layered",                       # tenant default is layered
+            tts=TenantTTSConfig(provider="sarvam", voice_id="anushka"),
+            realtime=TenantRealtimeConfig(provider="gemini_live",
+                                          model="gemini-3.1-flash-live-preview", voice="Aoede"))))
+    async with sm() as s:
+        await insert_call(s, call_id="call_s2s", tenant=ctx, provider_call_sid="call_s2s",
+                          channel="webconsole", mode="s2s")
+    async with sm() as s:
+        got = await s.get(Conversation, "call_s2s")
+    assert got.mode == "s2s"
+    assert got.realtime_provider == "gemini_live"
+
+
 async def test_count_active_calls(sm):
     async with sm() as s:
         s.add(_conv(id="c1", provider_call_sid="s1", status="in_progress"))

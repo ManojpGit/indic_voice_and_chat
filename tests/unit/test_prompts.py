@@ -179,3 +179,21 @@ def test_s2s_system_instruction_has_persona_tool_no_envelope() -> None:
     # cascade-only artifacts must NOT leak into the S2S instruction
     assert "JSON object" not in instr
     assert "Devanagari" not in instr
+
+
+def test_gender_directive_enforces_feminine_hindi_in_both_prompts() -> None:
+    from src.dialogue.prompts import build_s2s_system_instruction
+    script = VoiceBotScript.from_campaign_yaml({**SCRIPT, "gender": "female"})
+    schema = SlotSchema.from_campaign_yaml(yaml.safe_load(SLOT_YAML))
+    for instr in (build_s2s_system_instruction(script, schema),
+                  build_voicebot_system_prompt(script, schema)):
+        assert "FEMALE" in instr
+        assert "sakti" in instr            # feminine form spelled out
+        assert "sakta" in instr            # the masculine form is named as the one to avoid
+
+
+def test_no_gender_directive_when_unset() -> None:
+    from src.dialogue.prompts import build_s2s_system_instruction
+    script = VoiceBotScript.from_campaign_yaml(SCRIPT)   # no gender
+    schema = SlotSchema.from_campaign_yaml(yaml.safe_load(SLOT_YAML))
+    assert "FEMALE" not in build_s2s_system_instruction(script, schema)
