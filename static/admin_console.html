@@ -85,7 +85,7 @@
         <div class="crow" id="row_s2s" hidden>
           <span class="bar" style="background:#38bdf8"></span>
           <span class="clabel">Agent Session <small>(S2S realtime)</small></span>
-          <span class="cctrl"><select id="sel_s2s" onchange="onProvider('s2s')"></select><select id="mdl_s2s" style="max-width:9rem"></select><select id="voi_s2s" style="max-width:7rem"></select></span>
+          <span class="cctrl"><select id="sel_s2s" onchange="onProvider('s2s')"></select><select id="mdl_s2s" style="max-width:9rem" onchange="recompute()"></select><select id="voi_s2s" style="max-width:7rem"></select></span>
           <span class="ccost" id="cost_s2s">—</span>
         </div>
         <div class="crow" id="row_telephony">
@@ -97,19 +97,19 @@
         <div class="crow" id="row_llm">
           <span class="bar" style="background:#eab308"></span>
           <span class="clabel">LLM <small>(language model)</small></span>
-          <span class="cctrl"><select id="sel_llm" onchange="onProvider('llm')"></select><select id="mdl_llm"></select></span>
+          <span class="cctrl"><select id="sel_llm" onchange="onProvider('llm')"></select><select id="mdl_llm" onchange="recompute()"></select></span>
           <span class="ccost" id="cost_llm">—</span>
         </div>
         <div class="crow" id="row_stt">
           <span class="bar" style="background:#22c55e"></span>
           <span class="clabel">STT <small>(speech-to-text)</small></span>
-          <span class="cctrl"><select id="sel_stt" onchange="onProvider('stt')"></select><select id="mdl_stt"></select></span>
+          <span class="cctrl"><select id="sel_stt" onchange="onProvider('stt')"></select><select id="mdl_stt" onchange="recompute()"></select></span>
           <span class="ccost" id="cost_stt">—</span>
         </div>
         <div class="crow" id="row_tts">
           <span class="bar" style="background:#f97316"></span>
           <span class="clabel">TTS <small>(text-to-speech)</small></span>
-          <span class="cctrl"><select id="sel_tts" onchange="onProvider('tts')"></select><select id="mdl_tts" style="max-width:8rem"></select><select id="voi_tts" style="max-width:7rem"></select></span>
+          <span class="cctrl"><select id="sel_tts" onchange="onProvider('tts')"></select><select id="mdl_tts" style="max-width:8rem" onchange="recompute()"></select><select id="voi_tts" style="max-width:7rem"></select></span>
           <span class="ccost" id="cost_tts">—</span>
         </div>
       </div>
@@ -190,8 +190,8 @@ function logEntry(id, method, path, status, body) {
 function clearLog() { $("logBody").innerHTML = ""; }
 function show(el, obj) { const e = $(el); e.hidden = false; e.innerHTML = ""; const p = document.createElement("pre"); p.textContent = typeof obj === "string" ? obj : JSON.stringify(obj, null, 2); e.appendChild(p); }
 
-let MODELS = {};                         // kind -> provider -> [models]
-let COSTS = { stt:{}, llm:{}, tts:{}, s2s:{}, telephony:{} };  // kind -> provider -> cost/min
+let MODELS = {};   // kind -> provider -> [models]
+let COSTS = {};    // kind -> provider -> model("" = provider-level) -> cost/min
 
 function setOptions(sel, values, selected) {
   if (!sel) return;
@@ -217,8 +217,14 @@ function onProvider(kind) {                // provider changed in a row
 }
 function rowCost(kind) {
   const sel = $("sel_" + kind); if (!sel || !sel.value) return null;
-  const c = COSTS[kind] && COSTS[kind][sel.value];
-  return c === undefined ? null : c;
+  const byModel = COSTS[kind] && COSTS[kind][sel.value];
+  if (!byModel) return null;
+  const mdl = $("mdl_" + kind);                          // telephony has no model select
+  const model = mdl ? mdl.value : "";
+  // exact model rate, else provider-level ("") fallback.
+  if (model in byModel) return byModel[model];
+  if ("" in byModel) return byModel[""];
+  return null;
 }
 function recompute() {
   const mode = $("t_mode").value;
@@ -251,28 +257,35 @@ async function loadCatalog() {
   await fillVoices("tts"); await fillVoices("s2s");
   recompute();
 }
+function rowKey(kind, provider, model) { return `${kind}|${provider}|${model}`; }
 async function loadCosts() {
   const r = await api("GET", "/api/v1/providers");   // tenant-or-admin
-  COSTS = { stt:{}, llm:{}, tts:{}, s2s:{}, telephony:{} };
-  if (r.ok) for (const p of (r.json.providers || [])) { (COSTS[p.kind] = COSTS[p.kind] || {})[p.provider] = p.cost_per_min; }
+  COSTS = {};
+  if (r.ok) for (const p of (r.json.providers || [])) {
+    const byProv = (COSTS[p.kind] = COSTS[p.kind] || {});
+    (byProv[p.provider] = byProv[p.provider] || {})[p.model || ""] = p.cost_per_min;
+  }
   // telephony dropdown options come from the catalog (fallback to known set)
   const tels = Object.keys(COSTS.telephony || {});
   setOptions($("sel_telephony"), tels.length ? tels : TEL_FALLBACK, "twilio");
   $("cost_note").textContent = r.ok
-    ? "Rates from the provider cost catalog (live)."
+    ? "Per-model rates from the cost catalog (live) — total updates with the model dropdowns."
     : "Could not load rates — enter your admin token + Save.";
-  // also render the editable catalog table
+  // editable catalog table (one row per kind/provider/model)
   const el = $("prov_out"); el.hidden = false;
   if (!r.ok) { show("prov_out", r.json); recompute(); return; }
-  el.innerHTML = `<table><tr><th>kind</th><th>provider</th><th>cost/min</th><th></th></tr>` +
-    (r.json.providers || []).map(p => `<tr><td>${p.kind}</td><td>${p.provider}</td>
-      <td><input id="pc_${p.kind}_${p.provider}" value="${p.cost_per_min}" style="width:6rem"></td>
-      <td><button class="sm" onclick="updateCost('${p.kind}','${p.provider}')">PUT</button></td></tr>`).join("") + `</table>`;
+  el.innerHTML = `<table><tr><th>kind</th><th>provider</th><th>model</th><th>cost/min</th><th></th></tr>` +
+    (r.json.providers || []).map(p => {
+      const k = rowKey(p.kind, p.provider, p.model || "");
+      return `<tr><td>${p.kind}</td><td>${p.provider}</td><td>${p.model || "<i>(any)</i>"}</td>
+        <td><input id="pc_${k}" value="${p.cost_per_min}" style="width:6rem"></td>
+        <td><button class="sm" onclick="updateCost('${p.kind}','${p.provider}','${p.model || ""}')">PUT</button></td></tr>`;
+    }).join("") + `</table>`;
   recompute();
 }
-async function updateCost(kind, provider) {
-  const v = Number($(`pc_${kind}_${provider}`).value);
-  const r = await api("PUT", `/api/v1/providers/${kind}/${provider}`, { body: { cost_per_min: v } });
+async function updateCost(kind, provider, model) {
+  const v = Number($(`pc_${rowKey(kind, provider, model)}`).value);
+  const r = await api("PUT", `/api/v1/providers/${kind}/${provider}`, { body: { cost_per_min: v, model } });
   if (r.ok) loadCosts();
 }
 

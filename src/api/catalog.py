@@ -42,6 +42,7 @@ async def tenant_or_admin(
 class ProviderCostItem(BaseModel):
     kind: str
     provider: str
+    model: str = ""        # "" = provider-level (telephony / fallback)
     cost_per_min: float
 
 
@@ -51,6 +52,7 @@ class ProvidersResponse(BaseModel):
 
 class UpdateProviderCostRequest(BaseModel):
     cost_per_min: float = Field(ge=0)
+    model: str = ""        # specific model variant; "" for provider-level
 
 
 class VoiceItem(BaseModel):
@@ -72,12 +74,14 @@ async def list_providers(
     session: AsyncSession = Depends(get_db_session),
     _: None = Depends(tenant_or_admin),
 ) -> ProvidersResponse:
-    """List every provider and its current cost/min, ordered by kind then name."""
+    """List every (provider, model) rate, ordered by kind, provider, model."""
     rows = (await session.execute(
-        select(ProviderCost).order_by(ProviderCost.kind, ProviderCost.provider)
+        select(ProviderCost).order_by(
+            ProviderCost.kind, ProviderCost.provider, ProviderCost.model)
     )).scalars().all()
     return ProvidersResponse(providers=[
-        ProviderCostItem(kind=r.kind, provider=r.provider, cost_per_min=r.cost_per_min)
+        ProviderCostItem(kind=r.kind, provider=r.provider, model=r.model,
+                         cost_per_min=r.cost_per_min)
         for r in rows
     ])
 
@@ -90,15 +94,20 @@ async def update_provider_cost(
     session: AsyncSession = Depends(get_db_session),
     _: None = Depends(require_admin),
 ) -> ProviderCostItem:
-    """Upsert a provider's cost/min. Admin-only. New rate is read live."""
-    row = await session.get(ProviderCost, (kind, provider))
+    """Upsert a (provider, model) cost/min. Admin-only. New rate is read live.
+
+    ``model`` defaults to "" (provider-level / telephony).
+    """
+    row = await session.get(ProviderCost, (kind, provider, req.model))
     if row is None:
-        row = ProviderCost(kind=kind, provider=provider, cost_per_min=req.cost_per_min)
+        row = ProviderCost(kind=kind, provider=provider, model=req.model,
+                           cost_per_min=req.cost_per_min)
         session.add(row)
     else:
         row.cost_per_min = req.cost_per_min
     await session.commit()
-    return ProviderCostItem(kind=kind, provider=provider, cost_per_min=req.cost_per_min)
+    return ProviderCostItem(kind=kind, provider=provider, model=req.model,
+                            cost_per_min=req.cost_per_min)
 
 
 class ModelsResponse(BaseModel):

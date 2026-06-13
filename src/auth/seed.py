@@ -104,11 +104,16 @@ async def seed_provider_costs(sessionmaker, path: Path = _PROVIDER_COSTS_YAML) -
     inserted = 0
     async with sessionmaker() as session:
         for kind, providers in data.items():
-            for provider, cost in (providers or {}).items():
-                if await session.get(ProviderCost, (kind, provider)) is None:
-                    session.add(ProviderCost(
-                        kind=kind, provider=provider, cost_per_min=float(cost)))
-                    inserted += 1
+            for provider, val in (providers or {}).items():
+                # Nested {model: cost} -> per-model rows; scalar -> provider-level
+                # (model="") for telephony / a provider default.
+                entries = val.items() if isinstance(val, dict) else [("", val)]
+                for model, cost in entries:
+                    if await session.get(ProviderCost, (kind, provider, model)) is None:
+                        session.add(ProviderCost(
+                            kind=kind, provider=provider, model=model,
+                            cost_per_min=float(cost)))
+                        inserted += 1
         await session.commit()
     if inserted:
         log.info("seeded provider costs", extra={"inserted": inserted})

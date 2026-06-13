@@ -64,24 +64,33 @@ async def test_seed_from_yaml_then_resolve(sm, tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_seed_provider_costs_inserts_missing_preserves_existing(sm, tmp_path):
     costs_yaml = tmp_path / "costs.yaml"
+    # nested = per-model (llm); scalar = provider-level model="" (telephony).
     costs_yaml.write_text(textwrap.dedent("""
-        tts: {sarvam: 0.0}
+        llm:
+          gemini:
+            gemini-2.5-flash: 0.002
+            gemini-2.5-pro: 0.012
         telephony: {twilio: 0.014, exotel: 0.007}
     """))
 
-    # First seed inserts all three rows.
-    assert await seed_provider_costs(sm, costs_yaml) == 3
+    # First seed inserts all four rows (2 model-level llm + 2 telephony).
+    assert await seed_provider_costs(sm, costs_yaml) == 4
+    async with sm() as s:
+        # model-level row keyed by (kind, provider, model)
+        assert (await s.get(ProviderCost, ("llm", "gemini", "gemini-2.5-pro"))).cost_per_min == 0.012
+        # telephony stored with empty model
+        assert (await s.get(ProviderCost, ("telephony", "twilio", ""))).cost_per_min == 0.014
 
     # An admin edits the twilio rate after seeding.
     async with sm() as s:
-        row = await s.get(ProviderCost, ("telephony", "twilio"))
+        row = await s.get(ProviderCost, ("telephony", "twilio", ""))
         row.cost_per_min = 0.99
         await s.commit()
 
     # Re-seeding is insert-missing-only: nothing new, the edited rate is preserved.
     assert await seed_provider_costs(sm, costs_yaml) == 0
     async with sm() as s:
-        assert (await s.get(ProviderCost, ("telephony", "twilio"))).cost_per_min == 0.99
+        assert (await s.get(ProviderCost, ("telephony", "twilio", ""))).cost_per_min == 0.99
 
 
 @pytest.mark.asyncio

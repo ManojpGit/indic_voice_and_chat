@@ -61,26 +61,35 @@ async def count_active_calls(session: AsyncSession, tenant_id: str) -> int:
     )).scalar_one()
 
 
-def _providers_used(
+def _components_used(
     *, mode: Optional[str], stt_provider: Optional[str], llm_provider: Optional[str],
     tts_provider: Optional[str], realtime_provider: Optional[str],
     telephony_provider: Optional[str],
-) -> list[tuple[str, str]]:
-    """The (kind, provider) pairs billed for one call, by mode."""
-    pairs: list[tuple[str, str]] = []
+    stt_model: str = "", llm_model: str = "", tts_model: str = "", realtime_model: str = "",
+) -> list[tuple[str, str, str]]:
+    """The (kind, provider, model) triples billed for one call, by mode."""
+    triples: list[tuple[str, str, str]] = []
     if mode == "s2s":
         if realtime_provider:
-            pairs.append(("s2s", realtime_provider))
+            triples.append(("s2s", realtime_provider, realtime_model or ""))
     else:
         if stt_provider:
-            pairs.append(("stt", stt_provider))
+            triples.append(("stt", stt_provider, stt_model or ""))
         if llm_provider:
-            pairs.append(("llm", llm_provider))
+            triples.append(("llm", llm_provider, llm_model or ""))
         if tts_provider:
-            pairs.append(("tts", tts_provider))
+            triples.append(("tts", tts_provider, tts_model or ""))
     if telephony_provider:
-        pairs.append(("telephony", telephony_provider))
-    return pairs
+        triples.append(("telephony", telephony_provider, ""))   # telephony has no model
+    return triples
+
+
+async def _rate(session: AsyncSession, kind: str, provider: str, model: str) -> float:
+    """Rate for (kind, provider, model); fall back to the provider-level ("") row."""
+    row = await session.get(ProviderCost, (kind, provider, model or ""))
+    if row is None and model:
+        row = await session.get(ProviderCost, (kind, provider, ""))
+    return row.cost_per_min if row is not None else 0.0
 
 
 async def compute_call_cost(
@@ -92,23 +101,24 @@ async def compute_call_cost(
     tts_provider: Optional[str] = None,
     realtime_provider: Optional[str] = None,
     telephony_provider: Optional[str] = None,
+    stt_model: str = "", llm_model: str = "", tts_model: str = "", realtime_model: str = "",
     duration_ms: Optional[int],
 ) -> float:
-    """Σ(cost/min for the providers used) × duration. 0.0 if no duration."""
+    """Σ(cost/min for the (provider, model) components used) × duration."""
     if not duration_ms or duration_ms <= 0:
         return 0.0
-    pairs = _providers_used(
+    triples = _components_used(
         mode=mode, stt_provider=stt_provider, llm_provider=llm_provider,
         tts_provider=tts_provider, realtime_provider=realtime_provider,
         telephony_provider=telephony_provider,
+        stt_model=stt_model, llm_model=llm_model, tts_model=tts_model,
+        realtime_model=realtime_model,
     )
     minutes = duration_ms / 60_000.0
-    total = 0.0
-    for kind, provider in pairs:
-        row = await session.get(ProviderCost, (kind, provider))
-        if row is not None:
-            total += row.cost_per_min * minutes
-    return round(total, 6)
+    per_min = 0.0
+    for kind, provider, model in triples:
+        per_min += await _rate(session, kind, provider, model)
+    return round(per_min * minutes, 6)
 
 
 async def record_outcome(
@@ -150,6 +160,9 @@ async def record_outcome(
     elif row.duration_ms is None and row.started_at is not None:
         # Derive call duration from when the row was created (call placed).
         row.duration_ms = max(0, int((row.ended_at - row.started_at).total_seconds() * 1000))
+    # Models live in the per-call pipeline_config snapshot (provider columns are
+    # on the row; models are not, so read them from the config).
+    pc = row.pipeline_config or {}
     row.cost = await compute_call_cost(
         session,
         mode=row.mode,
@@ -158,6 +171,10 @@ async def record_outcome(
         tts_provider=row.tts_provider,
         realtime_provider=row.realtime_provider,
         telephony_provider=row.telephony_provider,
+        stt_model=(pc.get("stt") or {}).get("model") or "",
+        llm_model=(pc.get("llm") or {}).get("model") or "",
+        tts_model=(pc.get("tts") or {}).get("model") or "",
+        realtime_model=(pc.get("realtime") or {}).get("model") or "",
         duration_ms=row.duration_ms,
     )
     await session.commit()

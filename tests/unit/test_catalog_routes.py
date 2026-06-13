@@ -85,6 +85,19 @@ async def test_update_provider_cost_inserts_missing(client: AsyncClient) -> None
     assert ("stt", "deepgram") in listed
 
 
+async def test_update_provider_cost_model_level(client: AsyncClient) -> None:
+    # A per-model rate lands as its own (kind, provider, model) row.
+    resp = await client.put(
+        "/providers/llm/gemini",
+        json={"cost_per_min": 0.012, "model": "gemini-2.5-pro"}, headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["model"] == "gemini-2.5-pro"
+    rows = (await client.get("/providers", headers=TENANT_HEADERS)).json()["providers"]
+    pro = [r for r in rows if r["kind"] == "llm" and r["provider"] == "gemini"
+           and r["model"] == "gemini-2.5-pro"]
+    assert pro and pro[0]["cost_per_min"] == 0.012
+
+
 async def test_update_provider_cost_requires_admin(client: AsyncClient) -> None:
     resp = await client.put(
         "/providers/tts/sarvam", json={"cost_per_min": 1.0}, headers=TENANT_HEADERS

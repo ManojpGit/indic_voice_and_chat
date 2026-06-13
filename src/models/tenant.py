@@ -131,17 +131,22 @@ class TenantSecret(Base):
 
 
 class ProviderCost(Base):
-    """Current cost/min per provider, by kind. The cost-maintenance catalog.
+    """Current cost/min per provider+model, by kind. The cost-maintenance catalog.
+
+    Keyed ``(kind, provider, model)``. ``model`` is the specific model id (e.g.
+    ``gemini-2.5-flash``) so STT/LLM/TTS/S2S can be priced per variant; for
+    telephony (no model) and as a provider-level fallback it is ``""``.
 
     Seeded from ``config/provider_costs.yaml`` and maintained live via
-    ``PUT /api/v1/providers/{kind}/{provider}``. Single source of truth for
-    ``GET /providers`` + per-call cost. Not tenant-scoped (platform-wide rates).
+    ``PUT /api/v1/providers/{kind}/{provider}`` (model in the body). Single source
+    of truth for ``GET /providers`` + per-call cost. Not tenant-scoped.
     """
 
     __tablename__ = "provider_costs"
 
     kind: Mapped[str] = mapped_column(String(20), primary_key=True)  # stt|llm|tts|s2s|telephony
     provider: Mapped[str] = mapped_column(String(40), primary_key=True)
+    model: Mapped[str] = mapped_column(String(60), primary_key=True, default="")
     cost_per_min: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=False), server_default=func.now(), onupdate=func.now()

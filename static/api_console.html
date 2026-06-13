@@ -157,8 +157,8 @@ async function loadProviders() {
   const r = await api("GET", "/api/v1/providers");
   const el = $("prov_out"); el.hidden = false;
   if (!r.ok) { show("prov_out", r.json); return; }
-  el.innerHTML = `<table><tr><th>kind</th><th>provider</th><th>cost/min</th></tr>` +
-    (r.json.providers || []).map(p => `<tr><td>${p.kind}</td><td>${p.provider}</td><td>${p.cost_per_min}</td></tr>`).join("") + `</table>`;
+  el.innerHTML = `<table><tr><th>kind</th><th>provider</th><th>model</th><th>cost/min</th></tr>` +
+    (r.json.providers || []).map(p => `<tr><td>${p.kind}</td><td>${p.provider}</td><td>${p.model || "(any)"}</td><td>${p.cost_per_min}</td></tr>`).join("") + `</table>`;
 }
 async function loadVoices() {
   const r = await api("GET", `/api/v1/voices?provider=${encodeURIComponent($("v_provider").value)}&language=${encodeURIComponent($("v_lang").value)}`);

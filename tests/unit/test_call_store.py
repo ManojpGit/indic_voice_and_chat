@@ -26,10 +26,11 @@ async def sm():
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as s:
         s.add(Tenant(id="t1", slug="t1", name="T1"))
-        # catalog: layered providers + telephony + s2s
+        # catalog: provider-level ("") rows + a per-model llm rate
         s.add_all([
             ProviderCost(kind="stt", provider="groq", cost_per_min=0.01),
-            ProviderCost(kind="llm", provider="gemini", cost_per_min=0.02),
+            ProviderCost(kind="llm", provider="gemini", cost_per_min=0.02),       # provider-level
+            ProviderCost(kind="llm", provider="gemini", model="gemini-2.5-pro", cost_per_min=0.50),
             ProviderCost(kind="tts", provider="sarvam", cost_per_min=0.03),
             ProviderCost(kind="telephony", provider="twilio", cost_per_min=0.10),
             ProviderCost(kind="s2s", provider="gemini_live", cost_per_min=0.50),
@@ -66,6 +67,28 @@ async def test_compute_cost_s2s(sm):
             s, mode="s2s", realtime_provider="gemini_live",
             telephony_provider="twilio", duration_ms=60_000)
     assert cost == pytest.approx(0.60)
+
+
+async def test_compute_cost_uses_model_rate(sm):
+    async with sm() as s:
+        # gemini-2.5-pro has its own (pricier) rate: 1 min = stt 0.01 + llm-pro 0.50
+        #   + tts 0.03 + telephony 0.10 = 0.64
+        cost = await compute_call_cost(
+            s, mode="layered", stt_provider="groq", llm_provider="gemini",
+            llm_model="gemini-2.5-pro", tts_provider="sarvam",
+            telephony_provider="twilio", duration_ms=60_000)
+    assert cost == pytest.approx(0.64)
+
+
+async def test_compute_cost_unknown_model_falls_back_to_provider(sm):
+    async with sm() as s:
+        # an unpriced model falls back to gemini's provider-level 0.02:
+        #   0.01 + 0.02 + 0.03 + 0.10 = 0.16
+        cost = await compute_call_cost(
+            s, mode="layered", stt_provider="groq", llm_provider="gemini",
+            llm_model="gemini-9-ultra", tts_provider="sarvam",
+            telephony_provider="twilio", duration_ms=60_000)
+    assert cost == pytest.approx(0.16)
 
 
 async def test_compute_cost_zero_duration(sm):

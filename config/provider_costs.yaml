@@ -1,24 +1,48 @@
-# Current cost per minute per provider, by kind. Seeds the `provider_costs`
-# table on first boot (missing rows only — existing rates are preserved).
-# Maintained live via PUT /api/v1/providers/{kind}/{provider} (or the Admin
-# console's cost catalog editor).
+# Cost per minute, by kind → provider → model. Seeds the `provider_costs` table
+# on first boot (missing rows only — existing rates are preserved). Maintained
+# live via PUT /api/v1/providers/{kind}/{provider} (model in the body) or the
+# Admin console's cost-catalog editor.
 #
-# Units: USD/min. These are APPROXIMATE market estimates (as of early 2026) to
-# make the cost estimate meaningful out of the box — replace with your actual
-# contracted rates. LLM/STT are really token/char-priced; we model a per-minute
-# rate from typical voice-agent usage (~150 words/min of dialogue).
+# STT/LLM/TTS/S2S are priced per model variant. Telephony has no model, so it's
+# given as a single scalar per provider (stored with model="").
+#
+# Units: USD/min — APPROXIMATE market estimates (early 2026) to make the cost
+# estimate meaningful out of the box; replace with your contracted rates.
+# LLM/STT are token/char-priced upstream; modeled here per-minute from typical
+# voice-agent usage (~150 words/min of dialogue).
 stt:
-  sarvam: 0.006      # Sarvam Saarika/Saaras STT
-  groq: 0.002        # Groq whisper-large-v3 (~$0.11/audio-hour)
-  deepgram: 0.0043   # Deepgram Nova streaming
+  sarvam:
+    "saaras:v2": 0.006
+  groq:
+    whisper-large-v3: 0.002
+    whisper-large-v3-turbo: 0.0015
+  deepgram:
+    nova-2: 0.0043
+    nova-3: 0.0058
 llm:
-  gemini: 0.002      # Gemini 2.5 flash-tier, typical turn volume
-  groq: 0.001        # Groq Llama (fast/cheap tier)
-  anthropic: 0.005   # Claude (provider-level avg; haiku cheaper, sonnet/opus more)
+  gemini:
+    gemini-2.5-flash: 0.002
+    gemini-2.5-flash-lite: 0.0008
+    gemini-2.5-pro: 0.012
+    gemini-2.0-flash: 0.0015
+    gemini-2.0-flash-lite: 0.0006
+  groq:
+    llama-3.3-70b-versatile: 0.0012
+    llama-3.1-70b-versatile: 0.0012
+    llama-3.1-8b-instant: 0.0003
+  anthropic:
+    claude-haiku-4-5: 0.002
+    claude-sonnet-4-6: 0.008
+    claude-opus-4-8: 0.04
 tts:
-  sarvam: 0.015      # Sarvam Bulbul TTS
+  sarvam:
+    "bulbul:v2": 0.015
+    "bulbul:v3": 0.018
+    "bulbul:v3-beta": 0.018
 s2s:
-  gemini_live: 0.03  # Gemini Live realtime audio (in+out)
+  gemini_live:
+    gemini-3.1-flash-live-preview: 0.03
+    gemini-2.5-flash-live-preview: 0.03
 telephony:
   twilio: 0.014
   exotel: 0.007
