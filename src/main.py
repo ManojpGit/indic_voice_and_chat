@@ -21,6 +21,7 @@ from pathlib import Path
 
 import redis.asyncio as redis_async
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from sqlalchemy import text
 
 from src.api import api_router, telephony_hooks
@@ -190,6 +191,19 @@ app.include_router(api_router)
 
 if dev_console_enabled():
     app.include_router(dev_router)              # GET /dev/voice
+
+
+_STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
+
+
+@app.get("/console", include_in_schema=False)
+async def api_console() -> FileResponse:
+    """A thin browser UI over the /api/v1 endpoints (uses the API itself).
+
+    Always available — it bypasses no auth: it just calls the API with the
+    bearer tokens the operator pastes in, so the API enforces access as usual.
+    """
+    return FileResponse(_STATIC_DIR / "api_console.html", media_type="text/html")
 
 
 @app.get("/health")
