@@ -32,6 +32,22 @@ TRANSCRIPT = [
 
 
 @pytest.mark.asyncio
+async def test_empty_transcript_is_no_answer_not_refused():
+    # The call dropped with nothing said/committed. Must NOT run the LLM (which
+    # guesses "refused" on an empty transcript) and must classify as the neutral
+    # NO_ANSWER. A one-sided transcript (some content) still goes to the LLM.
+    llm = FakeLLM('{"outcome": "refused", "summary": "x", "notes": "x", '
+                  '"callback_datetime": null, "callback_phrase": null}')
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+    result = await analyze_call(
+        transcript=[], slots={}, telephony_status=None,
+        final_action=None, tenant_timezone="Asia/Kolkata", now=now, llm=llm)
+    assert result.outcome == LeadCallOutcome.NO_ANSWER
+    assert result.analysis_source == "fallback"
+    assert llm.calls == 0  # the LLM classifier is never invoked for an empty call
+
+
+@pytest.mark.asyncio
 async def test_conversational_outcome_parsed():
     llm = FakeLLM(
         '{"outcome": "interested", "summary": "Lead was interested.", '

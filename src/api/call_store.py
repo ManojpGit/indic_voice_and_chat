@@ -36,20 +36,24 @@ async def insert_call(
     campaign_id: Optional[str] = None,
     lead_id: Optional[str] = None,
     voice: Optional[str] = None,
+    mode: Optional[str] = None,
 ) -> Conversation:
     """Insert an ``in_progress`` conversation row snapshotting the config used.
 
     Shared by Call Lead (telephony) and the browser/webconsole path so both
-    record the same per-call config for statistics + billing.
+    record the same per-call config for statistics + billing. ``mode`` overrides
+    the tenant default — the browser console can run S2S on a layered-default
+    tenant (or vice-versa), and the recorded mode drives the cost calculation.
     """
     p = tenant.settings.pipeline
-    realtime_provider = p.realtime.provider if (p.mode == "s2s" and p.realtime) else None
+    eff_mode = mode or p.mode
+    realtime_provider = p.realtime.provider if (eff_mode == "s2s" and p.realtime) else None
     v = voice or p.tts.voice_id or (p.realtime.voice if p.realtime else None)
     row = Conversation(
         id=call_id, tenant_id=tenant.id, campaign_id=campaign_id, lead_id=lead_id,
         agent_type="voicebot", channel=channel, status="in_progress",
         pipeline_config=p.model_dump(), provider_call_sid=provider_call_sid,
-        mode=p.mode, stt_provider=p.stt.provider, llm_provider=p.llm.provider,
+        mode=eff_mode, stt_provider=p.stt.provider, llm_provider=p.llm.provider,
         tts_provider=p.tts.provider, realtime_provider=realtime_provider, voice=v,
         telephony_provider=(p.telephony.provider or None),
     )

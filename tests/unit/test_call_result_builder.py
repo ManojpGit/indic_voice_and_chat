@@ -90,10 +90,13 @@ async def test_analyze_agent_call_returns_none_without_llm():
 
 @pytest.mark.asyncio
 async def test_analyze_agent_call_defensive_when_agent_lacks_session():
+    # No session → empty transcript. Must not crash, and an empty call is the
+    # neutral NO_ANSWER (not a lead-driven outcome from the LLM).
+    llm = FakeLLM('{"outcome":"not_interested","summary":"s","notes":"n"}')
     agent = SimpleNamespace()  # no session/slots, like the telephony FakeAgent
     analysis = await analyze_agent_call(
-        agent, llm=FakeLLM('{"outcome":"not_interested","summary":"s","notes":"n"}'),
-        tenant_timezone="Asia/Kolkata", final_action=None, now=NOW,
+        agent, llm=llm, tenant_timezone="Asia/Kolkata", final_action=None, now=NOW,
     )
     assert analysis is not None
-    assert analysis.outcome == LeadCallOutcome.NOT_INTERESTED
+    assert analysis.outcome == LeadCallOutcome.NO_ANSWER
+    assert llm.calls == 0

@@ -130,6 +130,18 @@ async def analyze_call(
             analysis_source="telephony",
         )
 
+    # Empty transcript (the line dropped before anything was said / committed) —
+    # there is nothing to classify. Don't run the LLM, which otherwise guesses
+    # "refused" on an empty transcript. Treat it as NO_ANSWER (a neutral,
+    # non-conversational outcome), never as a lead-driven refusal.
+    has_content = any((m.content or "").strip() for m in transcript if m.role != "system")
+    if not has_content:
+        return CallAnalysis(
+            outcome=LeadCallOutcome.NO_ANSWER,
+            summary="Call ended with no conversation.",
+            analysis_source="fallback",
+        )
+
     user_msg = (
         f"NOW: {now_local.isoformat()}\nTIMEZONE: {tenant_timezone}\n"
         f"COLLECTED DATA: {json.dumps(slots, ensure_ascii=False)}\n\n"

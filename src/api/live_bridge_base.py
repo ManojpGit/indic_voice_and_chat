@@ -88,9 +88,18 @@ class _BaseLiveBridge:
                     await events_task
                 except BaseException:  # noqa: BLE001
                     pass
+            # Closing the realtime session / transport can raise when the call
+            # dropped abnormally — must NOT skip outcome analysis below. Each
+            # teardown step is isolated so the outcome is always computed.
             if self._session is not None:
-                await self._session.aclose()
-            await self._on_teardown()
+                try:
+                    await self._session.aclose()
+                except Exception:  # noqa: BLE001
+                    log.exception("realtime session close failed on teardown")
+            try:
+                await self._on_teardown()
+            except Exception:  # noqa: BLE001
+                log.exception("transport teardown failed")
             # Salvage an in-progress turn (call ended mid-reply) so the transcript
             # + outcome aren't lost.
             try:
@@ -99,8 +108,14 @@ class _BaseLiveBridge:
                     await self._commit_turn()
             except Exception:  # noqa: BLE001 - never let salvage break teardown
                 log.exception("turn salvage on teardown failed")
-            await self._emit_outcome()
-            await self._agent.handle_hangup()
+            try:
+                await self._emit_outcome()
+            except Exception:  # noqa: BLE001 - outcome analysis must never break teardown
+                log.exception("outcome emission failed on teardown")
+            try:
+                await self._agent.handle_hangup()
+            except Exception:  # noqa: BLE001
+                log.exception("agent hangup failed on teardown")
 
     # --- model event handling (shared) ----------------------------------
     async def _consume_events(self) -> None:

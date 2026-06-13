@@ -154,6 +154,30 @@ class VoiceBotScript:
         )
 
 
+def _gender_directive(gender: str) -> Optional[str]:
+    """A grammatical-gender instruction for gendered languages (e.g. Hindi).
+
+    Hindi verbs/adjectives inflect for the speaker's gender, and the model
+    otherwise defaults to masculine — so a female agent says 'samajh sakta hoon'
+    (male) unless told. Returns None when gender is unset/unknown.
+    """
+    g = (gender or "").strip().lower()
+    if g in ("female", "f", "woman", "lady"):
+        return (
+            "You are FEMALE. When speaking Hindi, ALWAYS use feminine grammatical "
+            "forms for yourself — e.g. 'main samajh sakti hoon', 'main kar rahi hoon', "
+            "'maine socha tha', 'main aayi hoon' — and NEVER the masculine forms "
+            "('sakta', 'raha', 'aaya'). Keep this consistent on every single turn."
+        )
+    if g in ("male", "m", "man"):
+        return (
+            "You are MALE. When speaking Hindi, ALWAYS use masculine grammatical forms "
+            "for yourself — e.g. 'main samajh sakta hoon', 'main kar raha hoon', "
+            "'main aaya hoon' — and never feminine forms. Keep this consistent every turn."
+        )
+    return None
+
+
 def build_voicebot_system_prompt(
     script: VoiceBotScript,
     schema: SlotSchema,
@@ -178,6 +202,9 @@ def build_voicebot_system_prompt(
         parts.append(f"Your personality: {script.personality}.")
     if script.conversation_style:
         parts.append(f"Conversation style: {script.conversation_style}.")
+    _gd = _gender_directive(getattr(script, "gender", ""))
+    if _gd:
+        parts.append(_gd)
 
     # Language policy. The reply is spoken by an Indic (e.g. Hindi) TTS that
     # cannot pronounce Latin script, so response_text MUST be in the native
@@ -322,6 +349,9 @@ def build_s2s_system_instruction(
         parts.append(f"Your personality: {script.personality}.")
     if script.conversation_style:
         parts.append(f"Conversation style: {script.conversation_style}.")
+    _gd = _gender_directive(getattr(script, "gender", ""))
+    if _gd:
+        parts.append(_gd)
 
     # Language: speak directly, so natural Hinglish is encouraged (the opposite of
     # the cascade's Devanagari-only rule, which only existed for the Hindi TTS).
