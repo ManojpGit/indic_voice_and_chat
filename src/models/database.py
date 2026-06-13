@@ -81,7 +81,16 @@ def get_engine(url: Optional[str] = None) -> AsyncEngine:
 
 
 async def ensure_schema(url: Optional[str] = None) -> None:
-    """Create our schema if it doesn't exist (no-op on SQLite). Idempotent."""
+    """Create our schema if it doesn't exist (no-op on SQLite). Idempotent.
+
+    Checks for the schema first and only issues CREATE when it's actually
+    missing — a least-privilege DB user may lack CREATE on the database (and
+    Postgres rejects ``CREATE SCHEMA IF NOT EXISTS`` on a permission check even
+    when the schema already exists). If it's missing and we can't create it, the
+    error surfaces so the deploy can grant rights or pre-create the schema.
+    """
+    from sqlalchemy import text
+
     from src.config import get_settings
 
     url = url or get_settings().database.url
@@ -90,11 +99,20 @@ async def ensure_schema(url: Optional[str] = None) -> None:
         return
     engine = get_engine(url)
     async with engine.begin() as conn:
-        # CreateSchema isn't a schema-qualified table ref, so the translate map
-        # doesn't touch it — it emits CREATE SCHEMA with the real name, quoted.
-        await conn.run_sync(
-            lambda sync_conn: sync_conn.execute(CreateSchema(schema, if_not_exists=True))
-        )
+        def _ensure(sync_conn) -> None:
+            # pg_namespace (not information_schema.schemata, which is filtered by
+            # the caller's privileges) so a least-privilege user that already has
+            # access to an existing schema doesn't trigger a CREATE attempt.
+            exists = sync_conn.execute(
+                text("SELECT 1 FROM pg_namespace WHERE nspname = :s"),
+                {"s": schema},
+            ).first()
+            if exists:
+                return
+            # CreateSchema isn't a schema-qualified table ref, so the translate
+            # map doesn't touch it — emits CREATE SCHEMA with the real name.
+            sync_conn.execute(CreateSchema(schema))
+        await conn.run_sync(_ensure)
 
 
 def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
