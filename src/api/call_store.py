@@ -64,10 +64,14 @@ async def count_active_calls(session: AsyncSession, tenant_id: str) -> int:
 def _components_used(
     *, mode: Optional[str], stt_provider: Optional[str], llm_provider: Optional[str],
     tts_provider: Optional[str], realtime_provider: Optional[str],
-    telephony_provider: Optional[str],
     stt_model: str = "", llm_model: str = "", tts_model: str = "", realtime_model: str = "",
 ) -> list[tuple[str, str, str]]:
-    """The (kind, provider, model) triples billed for one call, by mode."""
+    """The (kind, provider, model) triples the PLATFORM bills for one call.
+
+    Telephony is intentionally excluded: the tenant brings its own telephony
+    provider key, so that cost is theirs (shown separately as tentative, never
+    in the platform total).
+    """
     triples: list[tuple[str, str, str]] = []
     if mode == "s2s":
         if realtime_provider:
@@ -79,8 +83,6 @@ def _components_used(
             triples.append(("llm", llm_provider, llm_model or ""))
         if tts_provider:
             triples.append(("tts", tts_provider, tts_model or ""))
-    if telephony_provider:
-        triples.append(("telephony", telephony_provider, ""))   # telephony has no model
     return triples
 
 
@@ -90,6 +92,17 @@ async def _rate(session: AsyncSession, kind: str, provider: str, model: str) -> 
     if row is None and model:
         row = await session.get(ProviderCost, (kind, provider, ""))
     return row.cost_per_min if row is not None else 0.0
+
+
+async def telephony_tentative_cost(
+    session: AsyncSession, provider: Optional[str], duration_ms: Optional[int]
+) -> float:
+    """Telephony cost for a call — TENTATIVE only (the tenant pays its own
+    telephony provider). Never part of the platform-billed total."""
+    if not provider or not duration_ms or duration_ms <= 0:
+        return 0.0
+    rate = await _rate(session, "telephony", provider, "")
+    return round(rate * (duration_ms / 60_000.0), 6)
 
 
 async def compute_call_cost(
@@ -104,13 +117,16 @@ async def compute_call_cost(
     stt_model: str = "", llm_model: str = "", tts_model: str = "", realtime_model: str = "",
     duration_ms: Optional[int],
 ) -> float:
-    """Σ(cost/min for the (provider, model) components used) × duration."""
+    """Platform-billed cost = Σ(cost/min for STT/LLM/TTS or S2S) × duration.
+
+    Excludes telephony (the tenant's own key). ``telephony_provider`` is accepted
+    for signature compatibility but not billed.
+    """
     if not duration_ms or duration_ms <= 0:
         return 0.0
     triples = _components_used(
         mode=mode, stt_provider=stt_provider, llm_provider=llm_provider,
         tts_provider=tts_provider, realtime_provider=realtime_provider,
-        telephony_provider=telephony_provider,
         stt_model=stt_model, llm_model=llm_model, tts_model=tts_model,
         realtime_model=realtime_model,
     )

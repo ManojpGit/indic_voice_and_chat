@@ -38,15 +38,16 @@
 
   /* cost breakdown */
   .breakdown { border:1px solid #1f2430; border-radius:.5rem; overflow:hidden; margin:.4rem 0 .2rem; }
-  .crow { display:grid; grid-template-columns:4px minmax(110px,1fr) minmax(180px,1.4fr) 7.5rem;
-          gap:.7rem; align-items:center; padding:.6rem .7rem; border-bottom:1px solid #1a1f29; }
+  .crow { display:grid; grid-template-columns:minmax(110px,1fr) minmax(180px,1.4fr) 8.5rem;
+          gap:.7rem; align-items:center; padding:.6rem .8rem; border-bottom:1px solid #1a1f29; }
   .crow:last-child { border-bottom:0; }
-  .crow .bar { width:4px; height:1.5rem; border-radius:2px; }
+  .crow.tentative { background:#0c1016; }
   .crow .clabel { font-weight:700; letter-spacing:.04em; font-size:.82rem; text-transform:uppercase; }
   .crow .clabel small { color:#8a94a6; font-weight:400; text-transform:none; letter-spacing:0; }
   .crow .cctrl { display:flex; gap:.35rem; }
   .crow .cctrl select { width:100%; }
   .crow .ccost { font-variant-numeric:tabular-nums; text-align:right; color:#e2e8f0; font-size:.9rem; }
+  .crow .ccost.tnt { color:#94a3b8; font-style:italic; }
   .ctotal { display:flex; justify-content:space-between; align-items:center; padding:.75rem .2rem .2rem;
             font-weight:800; letter-spacing:.04em; }
   .ctotal .amt { font-size:1.15rem; font-variant-numeric:tabular-nums; }
@@ -55,7 +56,7 @@
 </head>
 <body>
 <header>
-  <h1>Vox Admin Console <span class="badge">admin</span> <span class="hint">— register tenants &amp; maintain provider costs · tenant ops live on <a href="/console">/console</a></span></h1>
+  <h1>Vox Admin Console <span class="badge">admin</span> <span class="hint">— register tenants &amp; maintain provider costs · <a href="/admin/tenants">backoffice</a> · <a href="/console">tenant console</a></span></h1>
   <div class="creds">
     <label>API base URL <input id="baseUrl" style="width:16rem" placeholder="(same origin)" /></label>
     <label>Admin token <input id="adminToken" style="width:16rem" placeholder="Bearer for admin routes" /></label>
@@ -83,38 +84,33 @@
       <!-- live cost breakdown -->
       <div class="breakdown">
         <div class="crow" id="row_s2s" hidden>
-          <span class="bar" style="background:#38bdf8"></span>
           <span class="clabel">Agent Session <small>(S2S realtime)</small></span>
           <span class="cctrl"><select id="sel_s2s" onchange="onProvider('s2s')"></select><select id="mdl_s2s" style="max-width:9rem" onchange="recompute()"></select><select id="voi_s2s" style="max-width:7rem"></select></span>
           <span class="ccost" id="cost_s2s">—</span>
         </div>
-        <div class="crow" id="row_telephony">
-          <span class="bar" style="background:#a855f7"></span>
-          <span class="clabel">Telephony</span>
-          <span class="cctrl"><select id="sel_telephony" onchange="recompute()"></select></span>
-          <span class="ccost" id="cost_telephony">—</span>
-        </div>
         <div class="crow" id="row_llm">
-          <span class="bar" style="background:#eab308"></span>
           <span class="clabel">LLM <small>(language model)</small></span>
           <span class="cctrl"><select id="sel_llm" onchange="onProvider('llm')"></select><select id="mdl_llm" onchange="recompute()"></select></span>
           <span class="ccost" id="cost_llm">—</span>
         </div>
         <div class="crow" id="row_stt">
-          <span class="bar" style="background:#22c55e"></span>
           <span class="clabel">STT <small>(speech-to-text)</small></span>
           <span class="cctrl"><select id="sel_stt" onchange="onProvider('stt')"></select><select id="mdl_stt" onchange="recompute()"></select></span>
           <span class="ccost" id="cost_stt">—</span>
         </div>
         <div class="crow" id="row_tts">
-          <span class="bar" style="background:#f97316"></span>
           <span class="clabel">TTS <small>(text-to-speech)</small></span>
           <span class="cctrl"><select id="sel_tts" onchange="onProvider('tts')"></select><select id="mdl_tts" style="max-width:8rem" onchange="recompute()"></select><select id="voi_tts" style="max-width:7rem"></select></span>
           <span class="ccost" id="cost_tts">—</span>
         </div>
+        <div class="crow tentative" id="row_telephony">
+          <span class="clabel">Telephony <small>(tenant's own key — tentative)</small></span>
+          <span class="cctrl"><select id="sel_telephony" onchange="recompute()"></select></span>
+          <span class="ccost tnt" id="cost_telephony">—</span>
+        </div>
       </div>
-      <div class="ctotal"><span class="lbl">Total estimated cost</span><span class="amt" id="cost_total">$0.0000/min</span></div>
-      <div class="hint" id="cost_note">Rates from the provider cost catalog. Enter your admin token + Save to load live rates.</div>
+      <div class="ctotal"><span class="lbl">Total estimated cost <small style="font-weight:400;color:#8a94a6;text-transform:none;">(platform — excl. telephony)</small></span><span class="amt" id="cost_total">$0.0000/min</span></div>
+      <div class="hint" id="cost_note">Rates from the provider cost catalog. Enter your admin token + Save to load live rates. Telephony runs on the tenant's own provider key, so it's shown as a tentative estimate and not added to the platform total.</div>
 
       <!-- telephony details (creds + routing) -->
       <h2 style="margin-top:1rem;">Telephony details</h2>
@@ -228,14 +224,17 @@ function rowCost(kind) {
 }
 function recompute() {
   const mode = $("t_mode").value;
-  const rows = mode === "s2s" ? ["s2s", "telephony"] : ["telephony", "llm", "stt", "tts"];
+  const platform = mode === "s2s" ? ["s2s"] : ["llm", "stt", "tts"];
   let total = 0;
-  for (const kind of ["s2s", "telephony", "llm", "stt", "tts"]) {
-    const active = rows.includes(kind);
+  for (const kind of ["s2s", "llm", "stt", "tts"]) {
+    const active = platform.includes(kind);
     const c = active ? rowCost(kind) : null;
     $("cost_" + kind).textContent = !active ? "—" : (c === null ? "—" : fmt(c));
     if (active && c !== null) total += c;
   }
+  // Telephony: tentative (tenant's own key) — shown but never in the total.
+  const tc = rowCost("telephony");
+  $("cost_telephony").textContent = tc === null ? "tentative" : "~" + fmt(tc);
   $("cost_total").textContent = fmt(total);
 }
 function syncMode() {

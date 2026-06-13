@@ -20,6 +20,7 @@ def _app():
     app = FastAPI(lifespan=_no_lifespan)
     app.add_api_route("/console", main_module.api_console, methods=["GET"])
     app.add_api_route("/admin", main_module.admin_console, methods=["GET"])
+    app.add_api_route("/admin/tenants", main_module.backoffice, methods=["GET"])
     return app
 
 
@@ -53,3 +54,15 @@ async def test_admin_console_served() -> None:
     assert "/api/v1/models" in body
     assert "/api/v1/providers/" in body
     assert 'href="/console"' in body        # cross-link to the tenant page
+
+
+@pytest.mark.asyncio
+async def test_backoffice_served() -> None:
+    transport = ASGITransport(app=_app())
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        resp = await c.get("/admin/tenants")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "Vox Backoffice" in body
+    assert "/api/v1/tenants" in body          # tenant list
+    assert "/analytics" in body and "/billing" in body

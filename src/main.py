@@ -229,6 +229,12 @@ async def admin_console() -> FileResponse:
     return FileResponse(_STATIC_DIR / "admin_console.html", media_type="text/html")
 
 
+@app.get("/admin/tenants", include_in_schema=False)
+async def backoffice() -> FileResponse:
+    """Admin backoffice: tenant list + per-tenant analytics & billing."""
+    return FileResponse(_STATIC_DIR / "backoffice.html", media_type="text/html")
+
+
 @app.get("/health")
 async def health() -> dict:
     """Liveness + dependency probe + per-tenant provider routing."""

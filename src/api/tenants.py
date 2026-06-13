@@ -19,7 +19,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db_session
@@ -34,7 +34,8 @@ from src.config_tenant import (
     TenantTTSConfig,
 )
 from src.config_tenant import TenantLLMConfig as _LLM
-from src.models.tenant import Tenant, TenantApiKey, TenantPhoneNumber, TenantSecret
+from src.models.conversation import Conversation
+from src.models.tenant import ProviderCost, Tenant, TenantApiKey, TenantPhoneNumber, TenantSecret
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/tenants", tags=["tenants"])
@@ -217,3 +218,145 @@ async def register_tenant(
 
     log.info("registered tenant", extra={"tenant_id": tenant_id, "slug": slug})
     return RegisterTenantResponse(tenant_id=tenant_id, slug=slug, api_token=api_token)
+
+
+# --- Backoffice: list tenants + per-tenant analytics & billing -----------
+
+
+class LayerInfo(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+
+
+class TenantSummary(BaseModel):
+    tenant_id: str
+    slug: str
+    name: str
+    status: str
+    mode: str
+    max_concurrent_calls: int
+    stt: LayerInfo
+    llm: LayerInfo
+    tts: LayerInfo
+    realtime: LayerInfo
+    telephony_provider: Optional[str] = None
+
+
+class TenantListResponse(BaseModel):
+    tenants: list[TenantSummary]
+    total: int
+
+
+def _layer(pc: dict, key: str) -> LayerInfo:
+    d = pc.get(key) or {}
+    return LayerInfo(provider=d.get("provider"), model=d.get("model"))
+
+
+@router.get("", response_model=TenantListResponse)
+async def list_tenants(
+    session: AsyncSession = Depends(get_db_session),
+    _: None = Depends(require_admin),
+) -> TenantListResponse:
+    """List every tenant with its mode + selected providers/models (admin)."""
+    rows = (await session.execute(select(Tenant).order_by(Tenant.created_at))).scalars().all()
+    items = []
+    for t in rows:
+        pc = t.pipeline_config or {}
+        items.append(TenantSummary(
+            tenant_id=t.id, slug=t.slug, name=t.name, status=t.status,
+            mode=t.mode, max_concurrent_calls=t.max_concurrent_calls,
+            stt=_layer(pc, "stt"), llm=_layer(pc, "llm"), tts=_layer(pc, "tts"),
+            realtime=_layer(pc, "realtime"),
+            telephony_provider=(pc.get("telephony") or {}).get("provider"),
+        ))
+    return TenantListResponse(tenants=items, total=len(items))
+
+
+async def _require_tenant(session: AsyncSession, tenant_id: str) -> Tenant:
+    t = await session.get(Tenant, tenant_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    return t
+
+
+class TenantAnalytics(BaseModel):
+    tenant_id: str
+    total_calls: int
+    by_status: dict[str, int]
+    by_outcome: dict[str, int]
+    total_duration_ms: int
+    avg_duration_ms: int
+
+
+@router.get("/{tenant_id}/analytics", response_model=TenantAnalytics)
+async def tenant_analytics(
+    tenant_id: str,
+    session: AsyncSession = Depends(get_db_session),
+    _: None = Depends(require_admin),
+) -> TenantAnalytics:
+    """Call analytics for one tenant, aggregated from the conversations table."""
+    await _require_tenant(session, tenant_id)
+    rows = (await session.execute(
+        select(Conversation.status, Conversation.outcome, Conversation.duration_ms)
+        .where(Conversation.tenant_id == tenant_id)
+    )).all()
+    by_status: dict[str, int] = {}
+    by_outcome: dict[str, int] = {}
+    total_dur = 0
+    for status, outcome, dur in rows:
+        by_status[status or "unknown"] = by_status.get(status or "unknown", 0) + 1
+        if outcome:
+            by_outcome[outcome] = by_outcome.get(outcome, 0) + 1
+        total_dur += int(dur or 0)
+    n = len(rows)
+    return TenantAnalytics(
+        tenant_id=tenant_id, total_calls=n, by_status=by_status, by_outcome=by_outcome,
+        total_duration_ms=total_dur, avg_duration_ms=(total_dur // n if n else 0),
+    )
+
+
+class TenantBilling(BaseModel):
+    tenant_id: str
+    total_calls: int
+    billable_minutes: float
+    platform_cost: float                 # what we charge (STT/LLM/TTS or S2S)
+    avg_cost_per_call: float
+    tentative_telephony_cost: float      # tenant's own telephony — informational only
+    currency: str = "USD"
+
+
+@router.get("/{tenant_id}/billing", response_model=TenantBilling)
+async def tenant_billing(
+    tenant_id: str,
+    session: AsyncSession = Depends(get_db_session),
+    _: None = Depends(require_admin),
+) -> TenantBilling:
+    """Billing summary: platform cost (telephony excluded) + a tentative
+    telephony figure computed from the tenant's telephony provider rate."""
+    await _require_tenant(session, tenant_id)
+    rows = (await session.execute(
+        select(Conversation.cost, Conversation.duration_ms, Conversation.telephony_provider)
+        .where(Conversation.tenant_id == tenant_id)
+    )).all()
+    # telephony rates (model="") for the tentative figure
+    tel_rates = dict((p, c) for p, c in (await session.execute(
+        select(ProviderCost.provider, ProviderCost.cost_per_min)
+        .where(ProviderCost.kind == "telephony", ProviderCost.model == "")
+    )).all())
+
+    platform = 0.0
+    tentative_tel = 0.0
+    total_ms = 0
+    for cost, dur, tel in rows:
+        platform += float(cost or 0.0)
+        total_ms += int(dur or 0)
+        if tel and dur:
+            tentative_tel += tel_rates.get(tel, 0.0) * (int(dur) / 60_000.0)
+    n = len(rows)
+    return TenantBilling(
+        tenant_id=tenant_id, total_calls=n,
+        billable_minutes=round(total_ms / 60_000.0, 4),
+        platform_cost=round(platform, 6),
+        avg_cost_per_call=round(platform / n, 6) if n else 0.0,
+        tentative_telephony_cost=round(tentative_tel, 6),
+    )

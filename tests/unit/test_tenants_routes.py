@@ -137,6 +137,64 @@ async def test_register_duplicate_slug_409(ctx) -> None:
     assert resp.status_code == 409
 
 
+async def test_list_tenants_shows_mode_and_models(ctx) -> None:
+    client, _, _ = ctx
+    await client.post("/tenants", json=_body(slug="acme"), headers=ADMIN_HEADERS)
+    resp = await client.get("/tenants", headers=ADMIN_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] >= 1
+    acme = next(t for t in body["tenants"] if t["slug"] == "acme")
+    assert acme["mode"] == "layered"
+    assert acme["llm"]["provider"] == "gemini"
+    assert acme["llm"]["model"] == "gemini-2.5-flash-lite"
+    assert acme["tts"]["model"] == "bulbul:v3"
+    assert acme["telephony_provider"] == "twilio"
+
+
+async def test_list_tenants_requires_admin(ctx) -> None:
+    client, _, _ = ctx
+    assert (await client.get("/tenants")).status_code == 401
+
+
+async def test_tenant_analytics_and_billing(ctx) -> None:
+    client, _, sm = ctx
+    tid = (await client.post("/tenants", json=_body(slug="acme"), headers=ADMIN_HEADERS)).json()["tenant_id"]
+
+    # seed a couple of finished conversations + a telephony rate
+    from src.models.conversation import Conversation
+    from src.models.tenant import ProviderCost
+    async with sm() as s:
+        s.add(ProviderCost(kind="telephony", provider="twilio", model="", cost_per_min=0.10))
+        s.add(Conversation(
+            id="c1", tenant_id=tid, agent_type="voicebot", channel="voice", status="ended",
+            outcome="interested", pipeline_config={}, provider_call_sid="s1",
+            telephony_provider="twilio", cost=0.06, duration_ms=120_000))
+        s.add(Conversation(
+            id="c2", tenant_id=tid, agent_type="voicebot", channel="voice", status="ended",
+            outcome="not_interested", pipeline_config={}, provider_call_sid="s2",
+            telephony_provider="twilio", cost=0.03, duration_ms=60_000))
+        await s.commit()
+
+    an = (await client.get(f"/tenants/{tid}/analytics", headers=ADMIN_HEADERS)).json()
+    assert an["total_calls"] == 2
+    assert an["by_status"]["ended"] == 2
+    assert an["by_outcome"]["interested"] == 1
+    assert an["total_duration_ms"] == 180_000
+
+    bill = (await client.get(f"/tenants/{tid}/billing", headers=ADMIN_HEADERS)).json()
+    assert bill["total_calls"] == 2
+    assert bill["platform_cost"] == pytest.approx(0.09)        # 0.06 + 0.03, telephony excluded
+    assert bill["billable_minutes"] == pytest.approx(3.0)
+    # tentative telephony: 0.10/min * (2 + 1) min = 0.30
+    assert bill["tentative_telephony_cost"] == pytest.approx(0.30)
+
+
+async def test_tenant_analytics_unknown_404(ctx) -> None:
+    client, _, _ = ctx
+    assert (await client.get("/tenants/nope/analytics", headers=ADMIN_HEADERS)).status_code == 404
+
+
 async def test_register_s2s_mode(ctx) -> None:
     client, resolver, _ = ctx
     body = _body(

@@ -51,44 +51,42 @@ def _conv(**over):
     return Conversation(**base)
 
 
-async def test_compute_cost_layered(sm):
+async def test_compute_cost_layered_excludes_telephony(sm):
     async with sm() as s:
-        # 2 minutes layered: (0.01+0.02+0.03+0.10)/min * 2 = 0.32
+        # 2 min layered, platform only (telephony NOT billed): (0.01+0.02+0.03)*2 = 0.12
         cost = await compute_call_cost(
             s, mode="layered", stt_provider="groq", llm_provider="gemini",
             tts_provider="sarvam", telephony_provider="twilio", duration_ms=120_000)
-    assert cost == pytest.approx(0.32)
+    assert cost == pytest.approx(0.12)
 
 
-async def test_compute_cost_s2s(sm):
+async def test_compute_cost_s2s_excludes_telephony(sm):
     async with sm() as s:
-        # 1 minute s2s: (0.50 + 0.10) = 0.60
+        # 1 min s2s, platform only: 0.50 (telephony excluded)
         cost = await compute_call_cost(
             s, mode="s2s", realtime_provider="gemini_live",
             telephony_provider="twilio", duration_ms=60_000)
-    assert cost == pytest.approx(0.60)
+    assert cost == pytest.approx(0.50)
 
 
 async def test_compute_cost_uses_model_rate(sm):
     async with sm() as s:
-        # gemini-2.5-pro has its own (pricier) rate: 1 min = stt 0.01 + llm-pro 0.50
-        #   + tts 0.03 + telephony 0.10 = 0.64
+        # gemini-2.5-pro rate: 1 min = stt 0.01 + llm-pro 0.50 + tts 0.03 = 0.54
         cost = await compute_call_cost(
             s, mode="layered", stt_provider="groq", llm_provider="gemini",
             llm_model="gemini-2.5-pro", tts_provider="sarvam",
             telephony_provider="twilio", duration_ms=60_000)
-    assert cost == pytest.approx(0.64)
+    assert cost == pytest.approx(0.54)
 
 
 async def test_compute_cost_unknown_model_falls_back_to_provider(sm):
     async with sm() as s:
-        # an unpriced model falls back to gemini's provider-level 0.02:
-        #   0.01 + 0.02 + 0.03 + 0.10 = 0.16
+        # unpriced model falls back to gemini provider-level 0.02: 0.01+0.02+0.03 = 0.06
         cost = await compute_call_cost(
             s, mode="layered", stt_provider="groq", llm_provider="gemini",
             llm_model="gemini-9-ultra", tts_provider="sarvam",
             telephony_provider="twilio", duration_ms=60_000)
-    assert cost == pytest.approx(0.16)
+    assert cost == pytest.approx(0.06)
 
 
 async def test_compute_cost_zero_duration(sm):
@@ -97,13 +95,13 @@ async def test_compute_cost_zero_duration(sm):
             s, mode="layered", telephony_provider="twilio", duration_ms=0) == 0.0
 
 
-async def test_compute_cost_unknown_provider_skipped(sm):
+async def test_telephony_tentative_cost(sm):
+    from src.api.call_store import telephony_tentative_cost
     async with sm() as s:
-        # deepgram not in catalog -> contributes 0; telephony twilio counts.
-        cost = await compute_call_cost(
-            s, mode="layered", stt_provider="deepgram", telephony_provider="twilio",
-            duration_ms=60_000)
-    assert cost == pytest.approx(0.10)
+        # telephony twilio 0.10/min * 2 min = 0.20 — tentative, never in the total
+        assert await telephony_tentative_cost(s, "twilio", 120_000) == pytest.approx(0.20)
+        assert await telephony_tentative_cost(s, None, 120_000) == 0.0
+        assert await telephony_tentative_cost(s, "twilio", 0) == 0.0
 
 
 async def test_count_active_calls(sm):
@@ -128,7 +126,8 @@ async def test_record_outcome_writes_and_computes_cost(sm):
     assert row.outcome == "interested"
     assert row.summary == "Wants a callback"
     assert row.duration_ms == 120_000
-    assert row.cost == pytest.approx(0.32)
+    # platform cost only (stt+llm+tts) — telephony excluded: (0.01+0.02+0.03)*2
+    assert row.cost == pytest.approx(0.12)
     assert row.ended_at is not None
 
 
